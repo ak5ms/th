@@ -1,0 +1,26 @@
+﻿Interview Task: Predicting ESc1 Forward Returns 
+Objective 
+Build a mid-frequency futures strategy that predicts future returns for ESc1 (E-mini S&P 500 front-month contract). 
+Data 
+5-minute bars containing: 
+* 99 anonymized raw signals 
+* ESc1 raw prices and volumes/cashflows 
+Prices are withheld for the out-of-sample period (last two years of data). 
+Scope 
+The task has two important components. 
+1. Feature Engineering 
+Examine the provided features and propose how they should be transformed to be used in the model. In your write-up, explain: 
+* How you transform raw signals into model-ready features 
+* How you chose transformations and their parameters 
+* Any feature selection you performed and the rationale behind it 
+* How you evaluated features prior to model fitting 
+* The properties you looked for in a good feature, and how you verified them 
+2. Modeling 
+Fit a model on your features to predict forward returns. In your write-up, discuss: 
+* The model(s) you explored and why you selected your final approach 
+* How you chose any parameters
+* Your evaluation methodology and the model properties you examined 
+Deliverables 
+1. Report documenting your full approach, results, and reasoning 
+2. Code for feature generation, model fitting, and evaluation 
+3. Predictions for the out-of-sample period
