@@ -1,0 +1,67 @@
+name: Evaluate fitting and baseline revision
+on:
+  push:
+    branches: [agent/eda-notebook]
+    paths: [.github/workflows/evaluate-revision.yml]
+permissions:
+  contents: write
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      OMP_NUM_THREADS: 2
+      OPENBLAS_NUM_THREADS: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -q -r requirements.txt
+      - run: python _update_nb.py
+      - run: python -m pytest -q
+      - name: Preflight notebook CVXPY cells
+        env:
+          PYTHONPATH: src
+        run: |
+          python - <<'PY'
+          import nbformat, numpy as np, pandas as pd
+          ns={'np':np,'pd':pd,'display':lambda x: None}
+          nb=nbformat.read('notebooks/01_eda.ipynb',as_version=4)
+          for c in nb.cells:
+              if c.cell_type=='code' and ('X_check =' in c.source or 'batch_model =' in c.source):
+                  exec(c.source,ns)
+          PY
+      - name: Execute all training observations
+        run: python run_eda.py
+      - name: Verify and display new outputs
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import nbformat, json
+          nb=nbformat.read('notebooks/01_eda.ipynb',as_version=4)
+          code=[c for c in nb.cells if c.cell_type=='code']
+          assert all(c.execution_count is not None for c in code)
+          assert not any(o.output_type=='error' for c in code for o in c.outputs)
+          assert not Path('reports').exists() and not Path('EDA_SUMMARY.md').exists()
+          assert json.loads(Path('splits.json').read_text())['train_rows']==640734
+          source='\n'.join(c.source for c in code)
+          assert 'from sklearn' not in source
+          for c in code:
+              if any(k in c.source for k in ['session_diagnostics =','meta_summary =','X_check =','batch_model =','exception_dates =']):
+                  for o in c.outputs:
+                      if o.output_type=='stream': print(o.text)
+                      if 'text/plain' in o.get('data',{}): print(o.data['text/plain'])
+          print('NOTEBOOK_COUNTS',len(code),sum('image/png' in o.get('data',{}) for c in code for o in c.outputs))
+          print(nb.cells[-1].source)
+          PY
+      - name: Save evaluated notebook and remove temporary files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add notebooks/01_eda.ipynb splits.json README.md
+          git rm _update_nb.py .github/workflows/evaluate-revision.yml
+          git commit -m 'Store evaluated CVXPY, walk-forward, combined-signal and ES-calendar results'
+          git push origin HEAD:agent/eda-notebook
