@@ -36,9 +36,49 @@ def _coordinate_descent(G, h, theta, alpha, max_iter, tol):
 
 
 @njit(cache=True)
+def _stream_scalar_ols(X, y, weights, C, c, mx, my, total, coef, intercept,
+                       decay, tol, fit_intercept, record):
+    """Exact one-coordinate alpha=0 solve; the same weighted centered statistics."""
+    n = len(y)
+    history = np.empty((n if record else 0, 1))
+    intercepts = np.empty(n if record else 0)
+    xx, xy, mean, beta = C[0, 0], c[0], mx[0], coef[0]
+    failed, iterations, error, threshold = 0, 0, 0.0, tol
+    for t in range(n):
+        old = decay * total
+        total = old + weights[t]
+        xx *= decay
+        xy *= decay
+        if weights[t] > 0:
+            dx, dy = X[t, 0] - mean, y[t] - my
+            fraction = weights[t] / total
+            xx += old * fraction * dx * dx
+            xy += old * fraction * dx * dy
+            mean += fraction * dx
+            my += fraction * dy
+            g = xx / total + (0.0 if fit_intercept else mean * mean)
+            h = xy / total + (0.0 if fit_intercept else mean * my)
+            beta = h / g if g > 0 else 0.0
+            intercept = my - mean * beta if fit_intercept else 0.0
+            scale = np.sqrt(max(xx / total, 0.0))
+            if scale == 0:
+                scale = abs(mean) if not fit_intercept and mean != 0 else 1.0
+            error, threshold = abs(g * beta - h) / scale, tol * (1 + abs(h / scale))
+            failed += error > threshold
+            iterations = 1
+        if record:
+            history[t, 0], intercepts[t] = beta, intercept
+    C[0, 0], c[0], mx[0], coef[0] = xx, xy, mean, beta
+    return total, my, intercept, history, intercepts, failed, iterations, error, threshold
+
+
+@njit(cache=True)
 def _stream(X, y, weights, C, c, mx, my, total, coef, intercept,
             decay, alpha, max_iter, tol, fit_intercept, record):
     """Weighted Welford updates avoid subtracting two large raw moments."""
+    if X.shape[1] == 1 and alpha == 0:
+        return _stream_scalar_ols(X, y, weights, C, c, mx, my, total, coef, intercept,
+                                  decay, tol, fit_intercept, record)
     n, p = X.shape
     history = np.empty((n if record else 0, p))
     intercepts = np.empty(n if record else 0)
