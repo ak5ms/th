@@ -1,11 +1,13 @@
-numpy
-pandas
-scipy
-statsmodels
-matplotlib
-seaborn
-pyarrow
-jupyter
-nbconvert
-pytest
-diptest
+# Python 3.11+; all notebook and test dependencies.
+numpy>=1.26,<3
+pandas>=2.2,<4
+scipy>=1.12,<2
+statsmodels>=0.14,<1
+matplotlib>=3.8,<4
+diptest>=0.10,<1
+pyarrow>=15,<30
+jupyter>=1.0,<2
+nbclient>=0.10,<1
+nbconvert>=7.16,<8
+nbformat>=5.10,<6
+pytest>=8,<10
