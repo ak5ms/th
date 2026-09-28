@@ -13,7 +13,7 @@ Or open `notebooks/01_eda.ipynb` in Jupyter and Run All. `DATA_PATH` optionally 
 
 ## Outputs
 
-The evaluated notebook contains the figures, complete column-coverage table, complete cashflow-exception table, package versions, interpretation notes, and training-only summary. The runner saves it in place and records its execution time in a final notebook note. No CSV, HTML, Markdown report, or environment file is exported; there is no `reports/` folder. The only separate diagnostic file is `splits.json` at the repository root.
+The evaluated notebook contains the figures, complete column-coverage table, cashflow-exception sample and complete date counts, package versions, interpretation notes, and training-only summary. The runner saves it in place and records its execution time in a final notebook note. No CSV, HTML, Markdown report, or environment file is exported; there is no `reports/` folder. The only separate diagnostic file is `splits.json` at the repository root.
 
 ## Data contract
 
@@ -32,3 +32,7 @@ The distribution screen uses the full-sample Hartigan dip statistic, quartile sk
 ## Standalone transformation experiments
 
 The notebook separately displays cumulative P&L and a daily-Sharpe histogram for time-of-day standardization, every distinct raw pair product, and both directed pair residuals. `features.py` holds `dszl`, `pair_residual`, `pairwise_features` and `evaluate_features`; `plots.py` provides `display_results`. Pairs are column-batched, not row-sampled. Residuals use the existing lasso at `alpha=0`, `W=1`, with an intercept and pre-update predictions. All output stays inside the evaluated notebook.
+
+## Fitting and baseline interfaces
+
+`fitters.py` includes the Numba streaming estimator, independent `CvxpyWeightedLasso`, and the `BatchedFitters` walk-forward adapter. Both history interfaces accept `lag=1` for prior-estimate alignment. Tests reconcile original-unit objectives and predictions against CVXPY, not sklearn. `features.combine_pnls` computes a lagged, globally gross-normalized intrabar EWM-Sharpe blend, also inside column-batched pair evaluation. `sessions.py` separates exchange-open instants, trailing trading bars and empirical quote availability using CME holiday rules and dated historical-hour corrections. See the notebook for the calendar audit and limitations.
