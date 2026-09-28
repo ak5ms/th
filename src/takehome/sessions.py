@@ -3,6 +3,7 @@
 CME schedule/holidays: https://www.cmegroup.com/trading-hours.html
 Historical close change: https://www.cmegroup.com/tools-information/lookups/advisories/electronic-trading/20150817.html
 Halt removal: https://www.cmegroup.com/notices/electronic-trading/2021/06/20210621.html
+Mourning session: https://www.cmegroup.com/notices/clearing/2018/12/Chadv18-474.html
 Calendar rules are supplied by pandas_market_calendars, not a live halt feed.
 """
 import numpy as np
@@ -17,7 +18,7 @@ def _index(index):
 
 
 def es_schedule(index):
-    """Local exchange schedule, including holidays and 2015/2021 hours changes."""
+    """CME equity calendar plus dated ES corrections; not unscheduled halts."""
     import pandas_market_calendars as mcal
 
     index = _index(index)
@@ -35,7 +36,13 @@ def es_schedule(index):
     modern = schedule.index >= '2021-06-28'
     for field in ['break_start', 'break_end']:
         schedule.loc[modern, field] = schedule.loc[modern, 'market_close']
-    return schedule
+    # Unlike the cash market, ES had an overnight session on this mourning day.
+    day = pd.Timestamp('2018-12-05')
+    if schedule.index.min() <= day <= schedule.index.max():
+        opening = pd.Timestamp('2018-12-04 18:00', tz='America/New_York').tz_convert('UTC')
+        closing = pd.Timestamp('2018-12-05 09:30', tz='America/New_York').tz_convert('UTC')
+        schedule.loc[day] = [opening if col == 'market_open' else closing for col in schedule]
+    return schedule.sort_index()
 
 
 def is_tradable(index, *, bar_end=False, bar_size='5min'):
