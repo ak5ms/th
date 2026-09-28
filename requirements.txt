@@ -12,4 +12,5 @@ nbconvert>=7.16,<8
 nbformat>=5.10,<6
 pytest>=8,<10
 numba>=0.61,<1
-scikit-learn>=1.4,<2
+cvxpy>=1.6,<2
+pandas_market_calendars==5.4.0

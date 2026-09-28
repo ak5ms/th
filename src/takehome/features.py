@@ -78,15 +78,22 @@ def pairwise_features(X: pd.DataFrame, kind='product', hl: int = 288 * 21, batch
         yield pd.DataFrame(block, index=X.index)
 
 
-def evaluate_features(blocks, returns: pd.Series, hl: int = 288 * 21):
+def evaluate_features(blocks, returns: pd.Series, hl: int = 288 * 21, *,
+                      meta=False, meta_hl=252*288, positive_only=False):
     """Same standalone P&L per block; retain only daily P&L and coverage."""
     daily, summaries = [], []
+    numerator = pd.Series(0., index=returns.index) if meta else None
+    gross = numerator.copy() if meta else None
     for X in blocks:
         if not X.index.equals(returns.index):
             raise ValueError('Feature and return indexes must match exactly.')
         pnl = standalone_pnl(X, returns, hl)
         if np.isinf(pnl.to_numpy()).any():
             raise ValueError('Infinite P&L: inspect transformed features and their variance.')
+        if meta:
+            n, g = _blend_totals(pnl, meta_hl, positive_only)
+            numerator += n
+            gross += g
         days = pnl.resample('D').sum()  # Preserve the existing all-missing-day = 0 convention.
         summaries.append(pd.DataFrame({
             'daily_mean_over_std': sharpe(days), 'pnl_observations': pnl.count(),
@@ -97,4 +104,30 @@ def evaluate_features(blocks, returns: pd.Series, hl: int = 288 * 21):
         daily.append(days)
     if not daily:
         raise ValueError('At least one feature block is required.')
-    return pd.concat(daily, axis=1), pd.concat(summaries).sort_values('daily_mean_over_std', ascending=False)
+    result = (pd.concat(daily, axis=1), pd.concat(summaries).sort_values('daily_mean_over_std', ascending=False))
+    if meta:
+        return (*result, numerator.div(gross.replace(0, np.nan)).fillna(0).rename('meta_pnl'))
+    return result
+
+
+def _blend_totals(pnl, hl=252*288, positive_only=False):
+    """Unnormalized lagged contribution/gross; additive across column batches."""
+    if not np.isfinite(hl) or hl <= 0:
+        raise ValueError('Require a positive half-life.')
+    ewm = pnl.ewm(halflife=hl)
+    score = ewm.mean().div(ewm.std().replace(0, np.nan))
+    score = score.replace([np.inf, -np.inf], np.nan).fillna(0)
+    if positive_only:
+        score = score.clip(lower=0)
+    lagged = score.shift(1).fillna(0)
+    return lagged.mul(pnl).sum(axis=1), lagged.abs().sum(axis=1)
+
+
+def combine_pnls(pnl, hl=252*288, positive_only=False):
+    """Lagged EWM-Sharpe weights with unit gross, on intrabar P&Ls.
+
+    NaNs do not become zero observations in EWM estimation. Missing current
+    P&L contributes zero without reallocating the previously chosen weights.
+    """
+    numerator, gross = _blend_totals(pnl, hl, positive_only)
+    return numerator.div(gross.replace(0, np.nan)).fillna(0).rename('meta_pnl')

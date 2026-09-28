@@ -4,9 +4,8 @@ import pickle
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
-from sklearn.linear_model import Lasso
 
-from takehome.fitters import StreamingWeightedLasso
+from takehome.fitters import StreamingWeightedLasso, CvxpyWeightedLasso
 
 
 def sample(seed=7, n=80, p=4):
@@ -17,18 +16,9 @@ def sample(seed=7, n=80, p=4):
 
 
 def reference(X, y, weights, decay, alpha, intercept):
-    a = weights * decay ** np.arange(len(y) - 1, -1, -1)
-    keep = a > 0
-    X, y, a = X[keep], y[keep], a[keep]
-    mean = np.average(X, axis=0, weights=a)
-    scale = np.sqrt(np.average((X - mean) ** 2, axis=0, weights=a))
-    # Constant nonzero columns need an RMS fallback without an intercept.
-    rms = np.sqrt(np.average(X ** 2, axis=0, weights=a))
-    scale = np.where(scale > 0, scale, 1 if intercept else rms)
-    scale = np.where(scale > 0, scale, 1)
-    ref = Lasso(alpha=alpha, fit_intercept=intercept, tol=1e-12, max_iter=100000)
-    ref.fit(X / scale, y, sample_weight=a)
-    return ref.coef_ / scale, ref.intercept_
+    ref = CvxpyWeightedLasso(X.shape[1], decay, alpha, fit_intercept=intercept,
+                            tol=1e-12, max_iter=5000).fit(X, y, W=weights)
+    return ref.coef, ref.intercept_
 
 
 @pytest.mark.parametrize('intercept', [False, True])
