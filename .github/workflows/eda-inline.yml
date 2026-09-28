@@ -1,0 +1,63 @@
+name: Evaluate notebook-only EDA
+
+on:
+  push:
+    branches: [agent/eda-notebook]
+    paths: [.github/workflows/eda-inline.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OMP_NUM_THREADS: 2
+      OPENBLAS_NUM_THREADS: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -q -r requirements.txt
+      - name: Move diagnostics into the notebook
+        run: python _inline_outputs.py
+      - run: python -m pytest -q
+      - name: Execute the full training notebook
+        run: python run_eda.py
+      - name: Verify notebook-only outputs
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import nbformat
+          nb = nbformat.read('notebooks/01_eda.ipynb', as_version=4)
+          code = [c for c in nb.cells if c.cell_type == 'code']
+          assert all(c.execution_count is not None for c in code)
+          assert not any(o.output_type == 'error' for c in code for o in c.outputs)
+          assert not Path('reports').exists()
+          assert not Path('EDA_SUMMARY.md').exists()
+          source = '\n'.join(c.source for c in code)
+          assert all(x not in source for x in ['REPORTS', '.to_csv(', 'reports/'])
+          split = json.loads(Path('splits.json').read_text())
+          assert split['train_rows'] == 640734 and split['test_rows'] == 160325
+          assert len([c for c in nb.cells if 'execution_summary' in c.metadata.get('tags', [])]) == 1
+          for name in ['coverage', 'cashflow_outliers']:
+              cell = next(c for c in code if f'{name} =' in c.source)
+              tables = [o.data['text/html'] for o in cell.outputs if 'text/html' in o.get('data', {})]
+              assert tables and all('<td>...</td>' not in t for t in tables)
+          images = sum('image/png' in o.get('data', {}) for c in code for o in c.outputs)
+          print(f'VERIFIED: {len(code)} executed code cells, {images} embedded figures; no external reports.')
+          print(nb.cells[-1].source)
+          PY
+      - name: Save the evaluated notebook
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add notebooks/01_eda.ipynb splits.json
+          git rm _inline_outputs.py .github/workflows/eda-inline.yml
+          git commit -m 'Store notebook-only EDA outputs and inline run notes'
+          git push origin HEAD:agent/eda-notebook
