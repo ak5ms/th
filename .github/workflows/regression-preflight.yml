@@ -1,0 +1,44 @@
+name: Regression all-predictor preflight
+on:
+  push:
+    branches: [agent/eda-notebook]
+    paths: [.github/workflows/regression-preflight.yml]
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: src
+      OPENBLAS_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -q -r requirements.txt
+      - run: python _source_patch.py
+      - run: python -m pytest -q
+      - name: All-predictor compute preflight, not model selection
+        run: |
+          python - <<'PY'
+          import numpy as np,pandas as pd,time
+          from takehome.data import training_data
+          from takehome.fitters import StreamingWeightedLasso
+          raw=pd.read_parquet('ESc1_signal_components_5min (6).parquet')
+          if 'msgStamp' not in raw: raw=raw.reset_index()
+          df,_=training_data(raw.set_index('msgStamp').sort_index())
+          columns=df.head(0).filter(like='x').columns
+          frame=df.iloc[-8000:]
+          X=np.ascontiguousarray(frame[columns].fillna(0).to_numpy())
+          y=frame.ret_5m.to_numpy(); W=np.isfinite(y).astype(float)
+          for alpha in [1e-6,1e-5,1e-4]:
+              m=StreamingWeightedLasso(len(columns),2**(-1/6048),alpha,fit_intercept=True,max_iter=5000,tol=1e-8)
+              t=time.perf_counter(); m.fit_predict(X,y,W=W)
+              print('PREFLIGHT',alpha,len(y),len(columns),time.perf_counter()-t,'nonconverged',m.n_failed_,flush=True)
+          print('Feature completeness',df[columns].notna().all(axis=1).sum(),'of',len(df))
+          PY
