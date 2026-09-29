@@ -38,10 +38,10 @@ def test_notebook_lags_both_coefficients_and_intercept():
     assert_allclose(run_predictions(X, beta, bias, [True] * 4)[:3], actual[:3], equal_nan=True)
 
 
-def test_notebook_keeps_missing_predictor_and_prefit_rows_missing():
+def test_notebook_zero_imputes_predictors_but_masks_prefit_rows():
     X = np.array([[1., 2.], [3., 4.], [5., np.nan], [7., 8.]])
     actual = run_predictions(X, np.ones((4, 2)), np.zeros(4), [False, True, False, True])
-    assert_allclose(actual, [np.nan, np.nan, np.nan, 15.], equal_nan=True)
+    assert_allclose(actual, [np.nan, np.nan, 5., 15.], equal_nan=True)
 
 
 def test_every_feature_family_requests_its_own_overlay():
@@ -49,5 +49,5 @@ def test_every_feature_family_requests_its_own_overlay():
         source = tagged(f'family_overlay_{family}')
         assert f"meta_daily={data}_meta.resample('D').sum()" in source
     nb = nbformat.read(ROOT / 'notebooks/01_eda.ipynb', as_version=4)
-    real = next(c for c in nb.cells if 'X_fit = df[fit_columns]' in c.source)
+    real = next(c for c in nb.cells if 'all_predictor_fit' in c.metadata.get('tags', []))
     assert 'store_history=True' in real.source

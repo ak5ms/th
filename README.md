@@ -39,4 +39,8 @@ The notebook separately displays cumulative P&L and a daily-Sharpe histogram for
 
 ## Overlay and calibration diagnostics
 
-Each feature-family P&L panel highlights its own lagged EWM-Sharpe combination in purple, without display rescaling. The real-data regression shows coefficient histories and a full-training scatter of prior-row forecasts against targets, including OLS and W-weighted calibration slopes. Both coefficient and intercept histories are lagged. Calibration is diagnostic only: predictions are not rescaled to force slope one.
+Each feature-family P&L panel highlights its own lagged EWM-Sharpe combination in purple on a secondary right y-axis, without multiplying its values. The real-data regression shows coefficient histories and a full-training scatter of prior-row forecasts against targets, including OLS and W-weighted calibration slopes. Both coefficient and intercept histories are lagged. Calibration is diagnostic only: predictions are not rescaled to force slope one.
+
+## All-predictor regression backtests
+
+The notebook fits all 99 raw predictors with unit and squared-notional weights on the same zero-imputed design, retains prior-row coefficient predictions, and plots the daily-Sharpe lasso penalty sweep. A full-training Ridge sweep is explicitly in-sample and never uses the holdout. `features.backtest` defaults to the existing variance normalization and separately supports the literal z-score-division sensitivity. `StreamingWeightedLasso.fit_predict` bounds temporary history with storage-only chunks; every row is still fitted online.

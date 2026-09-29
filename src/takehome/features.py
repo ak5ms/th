@@ -131,3 +131,33 @@ def combine_pnls(pnl, hl=252*288, positive_only=False):
     """
     numerator, gross = _blend_totals(pnl, hl, positive_only)
     return numerator.div(gross.replace(0, np.nan)).fillna(0).rename('meta_pnl')
+
+
+def backtest(signal, returns, hl=288*21, *, normalization='variance'):
+    """Per-bar diagnostic P&L. Forecasts must already use prior-row coefficients.
+
+    variance preserves standalone alpha / EWMstd(alpha)^2; zscore implements
+    the separately requested alpha / ts_zscore(alpha) literally. No costs,
+    leverage cap, extra shift, or filtering of near-zero denominators.
+    """
+    if not signal.index.equals(returns.index):
+        raise ValueError('Signal and return indexes must match.')
+    if normalization == 'variance':
+        denominator = ts_std(signal, hl).pow(2)
+    elif normalization == 'zscore':
+        denominator = ts_zscore(signal, hl)
+    else:
+        raise ValueError('normalization must be variance or zscore.')
+    return signal.div(denominator.replace(0, np.nan)).mul(returns, axis=0).replace([np.inf, -np.inf], np.nan)
+
+
+def forecast_metrics(prediction, target):
+    """Unweighted y-on-yhat calibration and errors on their finite overlap."""
+    if not prediction.index.equals(target.index):
+        raise ValueError('Forecast and target indexes must match.')
+    values = pd.concat([prediction, target], axis=1).replace([np.inf, -np.inf], np.nan).dropna()
+    p, y = values.iloc[:, 0], values.iloc[:, 1]
+    slope = p.cov(y) / p.var() if len(p) > 1 and p.var() > 0 else np.nan
+    return dict(n=len(p), slope=slope, intercept=y.mean()-slope*p.mean(),
+                correlation=p.corr(y) if len(p) > 1 and p.std() > 0 and y.std() > 0 else np.nan,
+                rmse=np.sqrt((y-p).pow(2).mean()), zero_forecast_rmse=np.sqrt(y.pow(2).mean()))

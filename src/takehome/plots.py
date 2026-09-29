@@ -21,7 +21,7 @@ def heatmap(frame, title, figsize=(12, 8), labels=True, limits=None):
 
 
 def display_results(pnl_daily, title, *, meta_daily=None):
-    """Members and their unrescaled combination, then the member Sharpe histogram."""
+    """Members on the left, unrescaled combination on the right, then histogram."""
     from .features import sharpe
 
     if meta_daily is not None and not meta_daily.index.equals(pnl_daily.index):
@@ -31,9 +31,10 @@ def display_results(pnl_daily, title, *, meta_daily=None):
         cumulative = pnl_daily.iloc[:, start:start + 32].cumsum()
         ax.plot(cumulative.index, cumulative.to_numpy(), linewidth=.4, alpha=.3)
     if meta_daily is not None:
-        ax.plot(meta_daily.index, meta_daily.cumsum(), color='purple', linewidth=3,
-                zorder=10, label='Lagged EWM-Sharpe combination')
-        ax.legend(loc='upper left')
+        right = meta_daily.rename('Lagged EWM-Sharpe combination').cumsum().plot(
+            ax=ax, secondary_y=True, x_compat=True, color='purple', linewidth=3, zorder=10)
+        right.set_ylabel('Combined P&L (right axis; independent scale)')
+        right.legend(loc='upper left')
     ax.set_title(f'{title}: {len(pnl_daily.columns):,} features, all training days')
     ax.set_ylabel('Cumulative diagnostic P&L (arbitrary exposure units)')
     fig.tight_layout()

@@ -23,14 +23,16 @@ def test_family_overlay_uses_exact_cumulative_pnl(shown):
     combined = pd.Series([.1, .2, -.1, .05], index=index)
     scores = plots.display_results(daily, 'Family', meta_daily=combined)
     assert len(shown) == 2
+    assert len(shown[0].axes) == 2
     lines = shown[0].axes[0].lines
-    assert len(lines) == 3
-    for j, line in enumerate(lines[:-1]):
+    overlay = shown[0].axes[1].lines[0]
+    assert len(lines) == len(daily.columns)
+    for j, line in enumerate(lines):
         assert_allclose(line.get_ydata(), daily.iloc[:, j].cumsum())
-    assert_allclose(lines[-1].get_ydata(), combined.cumsum())
-    assert lines[-1].get_linewidth() > 4 * lines[0].get_linewidth()
-    assert lines[-1].get_zorder() > lines[0].get_zorder()
-    assert 'Lagged EWM-Sharpe' in lines[-1].get_label()
+    assert_allclose(overlay.get_ydata(), combined.cumsum())
+    assert overlay.get_linewidth() > 4 * lines[0].get_linewidth()
+    assert 'Lagged EWM-Sharpe' in overlay.get_label()
+    assert 'independent scale' in shown[0].axes[1].get_ylabel()
     assert_allclose(scores, daily.mean() / daily.std())
     assert sum(p.get_height() for p in shown[1].axes[0].patches) == len(daily.columns)
     assert not plt.get_fignums()
