@@ -1,0 +1,59 @@
+
+
+def forecast_alpha(x, *, hl=288*21, alpha=.01, min_train=288*21,
+                   tol=1e-8, max_iter=5000):
+    """At row t forecast x[t+1] from x[t], x[t-1], after learning x[t].
+
+    Fit x[s] ~ x[s-1] + x[s-2], with an intercept and unit complete-row weights.
+    A fixed scale from the initial min_train complete examples makes alpha
+    comparable across signal units. No forecast is published before that
+    warm-up. Missing lags are never filled; zero-weight rows advance decay.
+    Returns a same-index Series (decision timestamps) and fitting diagnostics.
+    """
+    import pandas as pd
+    from time import perf_counter
+    from .features import _time_index
+
+    _time_index(x)
+    if (not isinstance(min_train, (int, np.integer)) or min_train < 2
+            or not np.isfinite([hl, alpha, tol]).all() or hl <= 0 or alpha < 0 or tol <= 0):
+        raise ValueError('Require min_train>=2, hl>0, alpha>=0 and tol>0.')
+    values = x.replace([np.inf, -np.inf], np.nan).to_numpy(dtype=float)
+    lags = np.full((len(x), 2), np.nan)
+    lags[1:, 0], lags[2:, 1] = values[:-1], values[:-2]
+    valid = np.isfinite(values) & np.isfinite(lags).all(axis=1)
+    locations = np.flatnonzero(valid)
+    info = dict(feature=x.name, alpha=alpha, n_updates=int(valid.sum()),
+                failed_updates=0, scale=np.nan, seconds=0.)
+    if len(locations) < min_train:
+        return pd.Series(np.nan, index=x.index, name=x.name), info
+    warm = values[locations[:min_train]]
+    warm = warm[warm != 0]  # Same zero-as-missing scale convention as ts_std.
+    scale = (float(warm.std()) or float(np.sqrt(np.mean(warm**2))) or 1.) if len(warm) else 1.
+    model = StreamingWeightedLasso(2, 2**(-1/hl), alpha, max_iter=max_iter, tol=tol,
+                                   fit_intercept=True, store_history=True)
+    started = perf_counter()
+    model.fit(lags/scale, values/scale, W=valid.astype(float))
+    # Post-update coefficients now know x_t, but never x_{t+1}.
+    current = np.column_stack([values, lags[:, 0]])/scale
+    prediction = (np.einsum('ij,ij->i', model.get_coefs(), current)
+                  + model.get_intercepts())*scale
+    ready = (np.cumsum(valid) >= min_train) & np.isfinite(current).all(axis=1)
+    prediction[~ready] = np.nan
+    info.update(failed_updates=model.n_failed_, scale=scale, seconds=perf_counter()-started)
+    return pd.Series(prediction, index=x.index, name=x.name), info
+
+
+def forecast_alpha_blocks(X, *, batch_size=8, diagnostics=None, **parameters):
+    """Forecast every column independently; batch columns, never sample rows."""
+    import pandas as pd
+
+    if not isinstance(batch_size, int) or batch_size < 1 or not X.columns.is_unique:
+        raise ValueError('Require positive batch_size and unique feature names.')
+    for start in range(0, len(X.columns), batch_size):
+        block = {}
+        for name in X.columns[start:start+batch_size]:
+            block[name], info = forecast_alpha(X[name], **parameters)
+            if diagnostics is not None:
+                diagnostics.append(info)
+        yield pd.DataFrame(block, index=X.index)
