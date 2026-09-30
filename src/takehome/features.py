@@ -3,8 +3,15 @@ import numpy as np
 import pandas as pd
 
 
-def ts_std(x, hl: int):
-    return x.ewm(halflife=hl, min_periods=hl).std()
+def ewm_observed(x, hl, min_periods=0):
+    """Zero/nonfinite values are missing; decay advances on observed values."""
+    return x.replace([0, np.inf, -np.inf], np.nan).ewm(
+        halflife=hl, min_periods=min_periods, ignore_na=True)
+
+
+def ts_std(x, hl: int, min_periods=None):
+    """Nonzero-observation EWM std; exactly zero output stays undefined."""
+    return ewm_observed(x, hl, hl if min_periods is None else min_periods).std().replace(0, np.nan)
 
 
 def ts_standardize(x, hl: int):
@@ -12,7 +19,7 @@ def ts_standardize(x, hl: int):
 
 
 def ts_zscore(x, hl: int):
-    return x.sub(x.ewm(halflife=hl, min_periods=hl).mean()).div(ts_std(x, hl).replace(0, np.nan))
+    return x.sub(ewm_observed(x, hl, min_periods=hl).mean()).div(ts_std(x, hl).replace(0, np.nan))
 
 
 def sharpe(x):
@@ -114,7 +121,7 @@ def _blend_totals(pnl, hl=252*288, positive_only=False):
     """Unnormalized lagged contribution/gross; additive across column batches."""
     if not np.isfinite(hl) or hl <= 0:
         raise ValueError('Require a positive half-life.')
-    ewm = pnl.ewm(halflife=hl)
+    ewm = ewm_observed(pnl, hl)
     score = ewm.mean().div(ewm.std().replace(0, np.nan))
     score = score.replace([np.inf, -np.inf], np.nan).fillna(0)
     if positive_only:
@@ -126,7 +133,7 @@ def _blend_totals(pnl, hl=252*288, positive_only=False):
 def combine_pnls(pnl, hl=252*288, positive_only=False):
     """Lagged EWM-Sharpe weights with unit gross, on intrabar P&Ls.
 
-    NaNs do not become zero observations in EWM estimation. Missing current
+    Zeros and nonfinite values do not become observations in EWM estimation. Missing current
     P&L contributes zero without reallocating the previously chosen weights.
     """
     numerator, gross = _blend_totals(pnl, hl, positive_only)

@@ -14,7 +14,7 @@ def test_matches_explicit_weight_normalize_shift_and_sum():
     pnl.iloc[10:15,2]=np.nan
     pnl.iloc[:6,1]=np.nan
     for positive in [False,True]:
-        score=pnl.ewm(halflife=10).mean()/pnl.ewm(halflife=10).std()
+        score=pnl.replace(0,np.nan).ewm(halflife=10,ignore_na=True).mean()/pnl.replace(0,np.nan).ewm(halflife=10,ignore_na=True).std()
         score=score.replace([np.inf,-np.inf],np.nan).fillna(0.)
         if positive: score=score.clip(lower=0)
         weights=score.div(score.abs().sum(axis=1).replace(0,np.nan),axis=0)
