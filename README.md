@@ -43,4 +43,7 @@ Each feature-family P&L panel highlights its own lagged EWM-Sharpe combination i
 
 ## All-predictor regression backtests
 
-The notebook fits all 99 raw predictors with unit and squared-notional weights on the same zero-imputed design, retains prior-row coefficient predictions, and plots the daily-Sharpe lasso penalty sweep. A full-training Ridge sweep is explicitly in-sample and never uses the holdout. `features.backtest` defaults to the existing variance normalization and separately supports the literal z-score-division sensitivity. `StreamingWeightedLasso.fit_predict` bounds temporary history with storage-only chunks; every row is still fitted online.
+
+## Causal regression comparison
+
+`StreamingWeightedLasso_` is the Numba jitclass; `StreamingWeightedLasso` is its Python interface. `BatchRidge` and CVXPY `BatchLasso` share the `BatchedFitters`/`walk_forward_sweep` interface, storing fold snapshots and next-fold OOS predictions. `stream_at_folds` isolates the effect of live versus frozen refitting. The notebook includes x100 = cashflow/volume, matched-loss audits, OOS penalty sweeps, and explicitly noncausal predictor-lead experiments. All use the original training split; no extra reports are exported.

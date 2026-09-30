@@ -133,22 +133,11 @@ def combine_pnls(pnl, hl=252*288, positive_only=False):
     return numerator.div(gross.replace(0, np.nan)).fillna(0).rename('meta_pnl')
 
 
-def backtest(signal, returns, hl=288*21, *, normalization='variance'):
-    """Per-bar diagnostic P&L. Forecasts must already use prior-row coefficients.
-
-    variance preserves standalone alpha / EWMstd(alpha)^2; zscore implements
-    the separately requested alpha / ts_zscore(alpha) literally. No costs,
-    leverage cap, extra shift, or filtering of near-zero denominators.
-    """
+def backtest(signal, returns, hl=288*21):
+    """signal / EWMstd(signal)^2 * return; forecasts must already be aligned."""
     if not signal.index.equals(returns.index):
         raise ValueError('Signal and return indexes must match.')
-    if normalization == 'variance':
-        denominator = ts_std(signal, hl).pow(2)
-    elif normalization == 'zscore':
-        denominator = ts_zscore(signal, hl)
-    else:
-        raise ValueError('normalization must be variance or zscore.')
-    return signal.div(denominator.replace(0, np.nan)).mul(returns, axis=0).replace([np.inf, -np.inf], np.nan)
+    return standalone_pnl(signal, returns, hl).replace([np.inf, -np.inf], np.nan)
 
 
 def forecast_metrics(prediction, target):
@@ -161,3 +150,12 @@ def forecast_metrics(prediction, target):
     return dict(n=len(p), slope=slope, intercept=y.mean()-slope*p.mean(),
                 correlation=p.corr(y) if len(p) > 1 and p.std() > 0 and y.std() > 0 else np.nan,
                 rmse=np.sqrt((y-p).pow(2).mean()), zero_forecast_rmse=np.sqrt(y.pow(2).mean()))
+
+
+def with_cashflow_feature(df):
+    """Append the next x-number: raw cashflow/volume; undefined ratios stay missing."""
+    import re
+    numbers = [int(m.group(1)) for c in df if (m := re.fullmatch(r'x(\d+)', str(c)))]
+    name = f'x{max(numbers, default=0)+1}'
+    ratio = df['cashflow'].div(df['volume'].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+    return df.assign(**{name: ratio})

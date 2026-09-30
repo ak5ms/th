@@ -1,4 +1,4 @@
-"""Pre-update forecasts, normalized ridge loss and both backtest conventions."""
+"""Pre-update forecasts, normalized ridge loss and the standalone backtest convention."""
 import numpy as np
 import pandas as pd
 import pytest
@@ -63,20 +63,14 @@ def test_ridge_matches_direct_normal_equations_and_cvxpy():
     assert_allclose(m2.predict(X*7),m.predict(X),atol=1e-11)
 
 
-def test_backtest_matches_standalone_and_literal_formula():
+def test_backtest_matches_standalone_variance_formula():
     from takehome import features
-    idx=pd.date_range('2020-01-01',periods=120,freq='1h')
+    idx=pd.date_range('2020-01-01', periods=120, freq='1h')
     p=pd.Series(np.sin(np.arange(120)*.3)+.2,index=idx)
     r=pd.Series(np.cos(np.arange(120)*.3),index=idx)
-    for norm in ['variance','zscore']:
-        denom=features.ts_std(p,10)**2 if norm=='variance' else features.ts_zscore(p,10)
-        expected=p.div(denom.replace(0,np.nan)).mul(r).replace([np.inf,-np.inf],np.nan)
-        got=features.backtest(p,r,hl=10,normalization=norm)
-        assert_allclose(got,expected,equal_nan=True)
-        assert_allclose(got[:70],features.backtest(p[:70],r[:70],10,normalization=norm),equal_nan=True)
-    expected=features.standalone_pnl(p.to_frame('p'),r,hl=10).p
+    expected=p.div(features.ts_std(p,10).pow(2).replace(0,np.nan)).mul(r)
     assert_allclose(features.backtest(p,r,10),expected,equal_nan=True)
-    with pytest.raises(ValueError): features.backtest(p,r,10,normalization='unknown')
+    assert_allclose(features.backtest(p,r,10)[:70],features.backtest(p[:70],r[:70],10),equal_nan=True)
     with pytest.raises(ValueError): features.backtest(p,r.iloc[:-1],10)
 
 
