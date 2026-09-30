@@ -1,0 +1,39 @@
+name: Inspect walk-forward revision
+on:
+  push:
+    branches: [agent/eda-notebook]
+    paths: [.github/workflows/walkforward-preflight.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -q -r requirements.txt
+      - name: Confirm new regression tests fail before implementation
+        run: |
+          set +e
+          python -m pytest tests/test_walkforward_revision.py -q --tb=short
+          result=$?
+          test "$result" -eq 1
+      - name: Inspect existing notebook source
+        run: |
+          python - <<'PY'
+          import nbformat
+          nb=nbformat.read('notebooks/01_eda.ipynb',as_version=4)
+          for i,c in enumerate(nb.cells):
+              print(i, c.cell_type, c.source.splitlines()[0] if c.source else '',c.metadata.get('tags',[]))
+              if c.cell_type=='code' and (i<10 or any(k in c.source for k in ['LASSO_SWEEP','lasso_sweep =','regression_setup'])):
+                  print(c.source)
+          print('REGRESSION TESTS')
+          print(open('tests/test_regression_sweeps.py').read())
+          print('BACKTEST HELPER')
+          source=open('src/takehome/features.py').read()
+          print(source[source.index('def backtest'):])
+          PY
