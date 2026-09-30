@@ -1,0 +1,116 @@
+name: Evaluate alpha forecasts and volatility revision
+on:
+  push:
+    branches: [agent/eda-notebook]
+    paths: [.github/workflows/evaluate-alpha-forecasts.yml]
+permissions:
+  contents: write
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      OMP_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -q -r requirements.txt
+      - run: python _ar2_install.py && python _ar2_notebook.py
+      - name: Add concise numerical annotations, not sweep tables
+        run: |
+          python - <<'PY'
+          import nbformat
+          p='notebooks/01_eda.ipynb'
+          nb=nbformat.read(p,as_version=4)
+          c=next(c for c in nb.cells if 'alpha_forecast_sweep' in c.metadata.get('tags',[]))
+          c.source += '''\nfor penalty, row in ar_sweep.iterrows():
+              print(f'alpha={penalty:g}: meta daily Sharpe={row.meta_sharpe:.6f}; median member Sharpe={row.median_member_sharpe:.6f}; median RMSE/persistence={row.median_rmse_vs_persistence:.6f}; failed updates={int(row.failed_updates)}')
+          '''
+          c=next(c for c in nb.cells if 'alpha_forecast_controls' in c.metadata.get('tags',[]))
+          c.source += '''\nfor name, row in ar_comparison.iterrows():
+              print(f'{name}: meta daily Sharpe={row.meta_sharpe:.6f}; median member Sharpe={row.median_member_sharpe:.6f}; median PnL observations={row.median_pnl_observations:g}')
+          '''
+          for c in nb.cells:
+              if c.cell_type=='code': compile(c.source,'<notebook>','exec')
+          nbformat.write(nb,p)
+          PY
+      - run: python -m pytest -q --tb=short
+      - name: Execute new notebook cells on synthetic data before full replay
+        env:
+          PYTHONPATH: src
+          MPLBACKEND: Agg
+        run: |
+          python - <<'PY'
+          import numpy as np,pandas as pd,nbformat,matplotlib.pyplot as plt
+          from time import perf_counter
+          from takehome.features import evaluate_features,sharpe
+          from takehome.plots import display_results
+          index=pd.date_range('2020-01-01',periods=180,freq='5min',tz='UTC')
+          rng=np.random.default_rng(29)
+          df=pd.DataFrame(rng.normal(size=(180,5)),index=index,columns=['x1','x2','x3','x4','x100'])
+          df['ret_5m']=rng.normal(0,.001,len(df))
+          df.loc[index[20:30],'x100']=np.nan
+          ns=dict(df=df,x_cols=df.columns[:-1],rows=np.arange(len(df)),HL=5,META_HL=20,
+                  np=np,pd=pd,plt=plt,display=lambda x:None,perf_counter=perf_counter,
+                  evaluate_features=evaluate_features,sharpe=sharpe,display_results=display_results,
+                  split={'cutoff':index[-1]+pd.Timedelta(days=1)})
+          nb=nbformat.read('notebooks/01_eda.ipynb',as_version=4)
+          for c in nb.cells:
+              if c.cell_type=='code' and any(t in c.metadata.get('tags',[]) for t in
+                 ['alpha_forecast_sweep','alpha_forecast_backtest','alpha_forecast_controls']):
+                  exec(c.source,ns)
+          assert len(ns['ar_sweep'])==4 and len(ns['ar_comparison'])==3
+          print('Synthetic notebook preflight passed.')
+          PY
+      - name: Execute complete notebook on every training row
+        run: |
+          python -u - <<'PY'
+          import runpy
+          from nbclient import NotebookClient
+          original=NotebookClient.__init__
+          def report(cell,cell_index,**kwargs):
+              print('FINISHED_CELL',cell_index,cell.metadata.get('tags',[]),flush=True)
+              if any(t in cell.metadata.get('tags',[]) for t in ['ridge_sizing_diagnostic','alpha_forecast_sweep','alpha_forecast_controls']):
+                  for o in cell.get('outputs',[]):
+                      if o.output_type=='stream': print(o.text,flush=True)
+          def init(self,*args,**kwargs):
+              kwargs['on_cell_executed']=report
+              original(self,*args,**kwargs)
+          NotebookClient.__init__=init
+          runpy.run_path('run_eda.py',run_name='__main__')
+          PY
+      - name: Verify embedded outputs and artifacts
+        run: |
+          python - <<'PY'
+          import json,nbformat
+          from pathlib import Path
+          nb=nbformat.read('notebooks/01_eda.ipynb',as_version=4)
+          codes=[c for c in nb.cells if c.cell_type=='code']
+          assert all(c.execution_count is not None for c in codes)
+          assert not any(o.output_type=='error' for c in codes for o in c.outputs)
+          assert not Path('reports').exists()
+          assert json.loads(Path('splits.json').read_text())['train_rows']==640734
+          for tag in ['ridge_sizing_diagnostic','alpha_forecast_sweep','alpha_forecast_backtest','alpha_forecast_controls']:
+              c=next(c for c in codes if tag in c.metadata.get('tags',[]))
+              assert any('image/png' in o.get('data',{}) for o in c.outputs)
+              print('VERIFIED',tag)
+              for o in c.outputs:
+                  if o.output_type=='stream':print(o.text)
+          source='\n'.join(c.source for c in nb.cells)
+          assert 'literal_daily_sharpe' not in source
+          assert 'display(batch_sweep)' not in source and 'display(online_sweep)' not in source
+          print(nb.cells[-1].source)
+          PY
+      - name: Save evaluated notebook and remove temporary execution files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add notebooks/01_eda.ipynb splits.json README.md src/takehome/features.py src/takehome/fitters.py tests/test_blends.py
+          git rm _ar2_methods.txt _ar2_install.py _ar2_notebook.py .github/workflows/alpha-preflight.yml .github/workflows/alpha-checks.yml .github/workflows/evaluate-alpha-forecasts.yml
+          git commit -m 'Store causal AR2 alpha forecasts, zero-aware volatility and plotted hyperparameter diagnostics'
+          git push origin HEAD:agent/eda-notebook
