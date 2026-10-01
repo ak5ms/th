@@ -1,0 +1,63 @@
+name: Verify and evaluate signal-only normalization
+on:
+  push:
+    branches: [agent/eda-notebook]
+    paths: [.github/workflows/evaluate-normalization.yml]
+permissions:
+  contents: write
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      OMP_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -q -r requirements.txt
+      - run: python _normalization_nb.py
+      - run: python -m pytest -q --tb=short
+      - name: Execute all training rows and normalization candidates
+        run: |
+          python -u - <<'PY'
+          import time,json,nbformat
+          from pathlib import Path
+          from nbclient import NotebookClient
+          p=Path('notebooks/02_normalization.ipynb')
+          nb=nbformat.read(p,as_version=4)
+          def report(cell,cell_index,**kwargs):
+              print('FINISHED_CELL',cell_index,flush=True)
+              for o in cell.get('outputs',[]):
+                  if o.output_type=='stream': print(o.text,flush=True)
+          start=time.perf_counter()
+          NotebookClient(nb,timeout=900,kernel_name='python3',resources={'metadata':{'path':'.'}},on_cell_executed=report).execute()
+          seconds=time.perf_counter()-start
+          nb.metadata['normalization_execution_seconds']=seconds
+          nbformat.write(nb,p)
+          code=[c for c in nb.cells if c.cell_type=='code']
+          assert all(c.execution_count is not None for c in code)
+          assert not any(o.output_type=='error' for c in code for o in c.outputs)
+          pngs=sum('image/png' in o.get('data',{}) for c in code for o in c.outputs)
+          assert pngs>=9
+          last=next(c for c in code if 'normalization_audit' in c.metadata.get('tags',[]))
+          audit=next(o.data['application/json'] for o in last.outputs if 'application/json' in o.get('data',{}))
+          assert audit['training_rows']==640734 and audit['reserved_test_used'] is False
+          print('NUMERICAL_AUDIT',json.dumps(audit),flush=True)
+          assert not Path('reports').exists()
+          print('VERIFIED',len(code),'code cells;',pngs,'figures;',seconds,'seconds',flush=True)
+          readme=Path('README.md')
+          readme.write_text(readme.read_text()+'\n\n## Signal-only normalization\n\n`notebooks/02_normalization.ipynb` compares eight causal sizing rules on the previous-fold Ridge/Lasso forecasts, all 100 raw alphas, and simulated two-year label blackouts. `normalization.signal_weights` supplies floored/capped standard-deviation, RMS, and inverse-variance scores without asset volatility. The old backtest stays unchanged for reproducibility. All experimental output is embedded in the evaluated notebook.\n')
+          PY
+      - name: Commit evaluated notebook and remove execution scaffolding
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add notebooks/02_normalization.ipynb README.md
+          git rm _normalization_nb.py .github/workflows/evaluate-normalization.yml
+          git commit -m 'Store evaluated signal-only normalization comparisons and blackout stress tests'
+          git push origin HEAD:agent/eda-notebook
