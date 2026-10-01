@@ -51,3 +51,8 @@ Each feature-family P&L panel highlights its own lagged EWM-Sharpe combination i
 ## One-step alpha forecasts
 
 `fitters.forecast_alpha` learns each alpha from its own two lagged values using the streaming jitclass; forecasts are indexed by decision time. `forecast_alpha_blocks` limits column memory. The notebook compares these causal forecasts against matched persistence and explicitly noncausal future-value controls, and plots the fixed hyperparameter grid. All production EWM standard deviations use zero/nonfinite-as-missing inputs and `ignore_na=True` through `features.ts_std` / `ewm_observed`. The Ridge diagnostic separates forecast scale from inverse-variance exposure; zero handling is not a leverage cap.
+
+
+## Signal-only normalization
+
+`notebooks/02_normalization.ipynb` compares eight causal sizing rules on the previous-fold Ridge/Lasso forecasts, all 100 raw alphas, and simulated two-year label blackouts. `normalization.signal_weights` supplies floored/capped standard-deviation, RMS, and inverse-variance scores without asset volatility. The old backtest stays unchanged for reproducibility. All experimental output is embedded in the evaluated notebook.
