@@ -168,3 +168,23 @@ def test_all_notebooks_use_the_same_two_year_fold_generator():
         assert 'min_train_size=252*288' not in code.replace(' ',''), path.name
         if path.stem.startswith('takehome'):
             assert any('batch_forecast_export' in c.metadata.get('tags',[]) for c in nb.cells)
+
+
+def test_explicit_partial_fold_history_reconstructs_only_predicted_rows():
+    _, X, y = design()
+    folds = [dict(train_start=0, train_stop=10, predict_start=10, predict_stop=20)]
+    path = fitters.BatchedFitters(fitters.BatchRidge(3), folds=folds).fit(X, y)
+    reconstructed = (np.einsum('ij,ij->i', X, path.get_coefs(lag=1))
+                     + path.get_intercepts(lag=1))
+    assert_allclose(reconstructed, path.prediction_, equal_nan=True)
+
+
+def test_explicit_fold_generator_can_be_refitted_without_losing_windows():
+    index, X, y = design()
+    folds = calendar_folds(index)
+    path = fitters.walk_forward_sweep({'ridge': fitters.BatchRidge(3)}, X, y,
+                                     folds=(f.copy() for f in folds))['ridge']
+    expected = path.prediction_.copy()
+    assert len(path.explicit_folds) == len(folds)
+    path.fit(X, y)
+    assert_allclose(path.prediction_, expected, equal_nan=True)

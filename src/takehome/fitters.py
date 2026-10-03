@@ -594,14 +594,18 @@ class BatchedFitters:
     def get_coefs(self, lag=0):
         out = np.full((self.n_rows_, self.n_features), np.nan)
         for i, fold in enumerate(self.folds_):
-            stop = self.folds_[i+1]['predict_start']-1 if i+1 < len(self.folds_) else self.n_rows_
+            stop = fold['predict_stop'] - 1
+            if fold['predict_stop'] == self.n_rows_:
+                stop = self.n_rows_  # Retain the final post-update snapshot.
             out[fold['predict_start']-1:stop] = self.snapshots_[i]
         return _lagged(out, lag)
 
     def get_intercepts(self, lag=0):
         out = np.full(self.n_rows_, np.nan)
         for i, fold in enumerate(self.folds_):
-            stop = self.folds_[i+1]['predict_start']-1 if i+1 < len(self.folds_) else self.n_rows_
+            stop = fold['predict_stop'] - 1
+            if fold['predict_stop'] == self.n_rows_:
+                stop = self.n_rows_  # Retain the final post-update snapshot.
             out[fold['predict_start']-1:stop] = self.offsets_[i]
         return _lagged(out, lag)
 
@@ -623,7 +627,8 @@ def walk_forward_sweep(fitters, X, y, W=None, *, folds=None, **fold_parameters):
     X, y, w = _fit_input(X, y, W, p)
     selected = (walk_forward_folds(len(y), **fold_parameters) if folds is None
                 else _validated_folds(folds, len(y)))
-    paths = {name: BatchedFitters(model, folds=folds, **fold_parameters)._reset(len(y))
+    paths = {name: BatchedFitters(model, folds=selected if folds is not None else None,
+                                 **fold_parameters)._reset(len(y))
              for name, model in fitters.items()}
     models = deepcopy(fitters)
     for fold in selected:
