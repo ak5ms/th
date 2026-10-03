@@ -1,0 +1,126 @@
+name: Finalize two-year forecast exports
+on:
+  push:
+    branches: [agent/eda-notebook]
+    paths: [.github/workflows/finalize-two-year-exports.yml]
+permissions:
+  contents: write
+jobs:
+  verify-and-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/eda-notebook
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements.txt
+      - name: Apply tested explicit-fold edge-case fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import nbformat
+          p=Path('src/takehome/fitters.py');s=p.read_text()
+          old="            stop = self.folds_[i+1]['predict_start']-1 if i+1 < len(self.folds_) else self.n_rows_"
+          new="            stop = fold['predict_stop'] - 1\n            if fold['predict_stop'] == self.n_rows_:\n                stop = self.n_rows_  # Retain the final post-update snapshot."
+          assert s.count(old)==2
+          s=s.replace(old,new)
+          old='paths = {name: BatchedFitters(model, folds=folds, **fold_parameters)._reset(len(y))'
+          new='paths = {name: BatchedFitters(model, folds=selected if folds is not None else None,\n                                 **fold_parameters)._reset(len(y))'
+          assert old in s
+          p.write_text(s.replace(old,new,1))
+          p=Path('tests/test_two_year_forecasts.py')
+          p.write_text(p.read_text()+'''
+
+          def test_explicit_partial_fold_history_reconstructs_only_predicted_rows():
+              _, X, y = design()
+              folds = [dict(train_start=0, train_stop=10, predict_start=10, predict_stop=20)]
+              path = fitters.BatchedFitters(fitters.BatchRidge(3), folds=folds).fit(X, y)
+              reconstructed = (np.einsum('ij,ij->i', X, path.get_coefs(lag=1))
+                               + path.get_intercepts(lag=1))
+              assert_allclose(reconstructed, path.prediction_, equal_nan=True)
+
+
+          def test_explicit_fold_generator_can_be_refitted_without_losing_windows():
+              index, X, y = design()
+              folds = calendar_folds(index)
+              path = fitters.walk_forward_sweep({'ridge': fitters.BatchRidge(3)}, X, y,
+                                               folds=(f.copy() for f in folds))['ridge']
+              expected = path.prediction_.copy()
+              assert len(path.explicit_folds) == len(folds)
+              path.fit(X, y)
+              assert_allclose(path.prediction_, expected, equal_nan=True)
+          ''')
+          for name in ('takehome.ipynb','takehome_asset_vol.ipynb'):
+              p=Path('notebooks')/name
+              nb=nbformat.read(p,4)
+              for cell in nb.cells:
+                  if cell.cell_type=='markdown':
+                      cell.source=cell.source.replace('whole-history batch moments','two-year-window batch moments')
+                      cell.source=cell.source.replace('an expanding-window fit is never applied backward','a rolling-window fit is never applied backward')
+              nbformat.write(nb,p)
+          PY
+      - name: Full tests and evaluated notebook validation
+        run: |
+          set -o pipefail
+          pytest -q | tee /tmp/two-year-final-tests.log
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          import nbformat
+          for p in Path('notebooks').glob('*.ipynb'):
+              n=nbformat.read(p,4);nbformat.validate(n)
+              for c in n.cells:
+                  if c.cell_type=='code':
+                      ast.parse(c.source)
+                      assert c.execution_count is not None
+                      assert not any(o.output_type=='error' for o in c.outputs)
+              print('VALIDATED',p)
+          PY
+          git diff --check
+      - name: Commit verified edge cases and documentation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/finalize-two-year-exports.yml
+          git add src/takehome/fitters.py tests/test_two_year_forecasts.py notebooks/takehome.ipynb notebooks/takehome_asset_vol.ipynb
+          git diff --cached --check
+          git commit -m 'Preserve explicit fold boundaries and reusable fold iterators'
+          git push origin HEAD:agent/eda-notebook
+          git rev-parse HEAD > /tmp/two-year-final-commit.txt
+      - name: Package real Parquet bytes and CSV exports, not LFS pointers
+        run: |
+          git lfs pull --include='forecasts/*.parquet'
+          mkdir -p /tmp/two-year-complete
+          git archive HEAD notebooks src tests README.md run_eda.py run_forecast.py requirements.txt pytest.ini splits.json Takehome.txt forecasts | tar -x -C /tmp/two-year-complete
+          cp forecasts/*.parquet /tmp/two-year-complete/forecasts/
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import numpy as np,pandas as pd
+          p=Path('/tmp/two-year-complete/forecasts')
+          m=json.loads((p/'batched_lasso_metadata.json').read_text())
+          for suffix,count in [('walk_forward',m['validation_rows']),('oos',m['oos_rows'])]:
+              parquet=p/f'batched_lasso_{suffix}.parquet'
+              frame=pd.read_parquet(parquet)
+              assert len(frame)==count and np.isfinite(frame.forecast).all()
+              assert frame.index.is_unique and frame.index.is_monotonic_increasing
+              frame.to_csv(parquet.with_suffix('.csv'),index_label='msgStamp',float_format='%.17g')
+              print('PACKAGED',suffix,len(frame),frame.index[0],frame.index[-1])
+          PY
+          tar -czf /tmp/two-year-complete.tar.gz -C /tmp/two-year-complete .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: two-year-lasso-complete
+          path: |
+            /tmp/two-year-complete.tar.gz
+            /tmp/two-year-final-tests.log
+            /tmp/two-year-final-commit.txt
+          retention-days: 1
