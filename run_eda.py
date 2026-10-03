@@ -25,7 +25,7 @@ if __name__ == '__main__':
         f'## Last scripted execution\n\n{stamp}: completed {len(code)} code cells '
         f'and {images} figures in {duration:.1f} seconds, with no cell errors.\n\n'
         'Tables, figures, package versions and interpretation are embedded above. '
-        'The only separate diagnostic file is `splits.json` at the repository root.',
+        'Split boundaries are in `splits.json`; batch forecast exports are under `forecasts/`.',
         metadata={'tags': ['execution_summary']},
     ))
     nbformat.write(nb, path)
