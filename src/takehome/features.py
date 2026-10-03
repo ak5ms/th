@@ -28,13 +28,27 @@ def sharpe(x):
     return x.mean() / np.where(std == 0, np.nan, std)
 
 
-def standalone_pnl(X: pd.DataFrame, returns: pd.Series, hl: int = 288 * 21):
-    """signal / feature_variance * return; current feature is in EWM state.
+def _pnl_with_asset_sigma(X, returns, hl, asset_sigma=None):
+    feature_sigma = ts_std(X, hl)
+    denominator = (feature_sigma.pow(2) if asset_sigma is None else
+                   feature_sigma.mul(asset_sigma, axis=0))
+    return X.div(denominator.replace(0, np.nan)).mul(returns, axis=0)
 
-    Return timing must be checked separately; this is not an execution model.
-    Zero variance and warm-up stay missing, with no artificial leverage cap.
+
+def standalone_pnl(X: pd.DataFrame, returns: pd.Series, hl: int = 288 * 21, *,
+                   asset_vol: bool = False):
+    """Default: signal / feature_variance * return, unchanged.
+
+    Experimental asset_vol=True uses signal / (feature_std * lagged_return_std).
+    Both scales use ts_std's existing missing/zero and warm-up conventions; the
+    asset scale sees returns.shift(1), never the current realized return. This
+    diagnostic requires observed return history and is not a blackout solution.
+    No variance floor, leverage cap or filling is added.
     """
-    return X.div(ts_std(X, hl).pow(2).replace(0, np.nan)).mul(returns, axis=0)
+    if not X.index.equals(returns.index):
+        raise ValueError('Signal and return indexes must match.')
+    asset_sigma = ts_std(returns.shift(1), hl) if asset_vol else None
+    return _pnl_with_asset_sigma(X, returns, hl, asset_sigma)
 
 
 def _time_index(x):
@@ -86,15 +100,17 @@ def pairwise_features(X: pd.DataFrame, kind='product', hl: int = 288 * 21, batch
 
 
 def evaluate_features(blocks, returns: pd.Series, hl: int = 288 * 21, *,
-                      meta=False, meta_hl=252*288, positive_only=False):
+                      meta=False, meta_hl=252*288, positive_only=False, asset_vol=False):
     """Same standalone P&L per block; retain only daily P&L and coverage."""
     daily, summaries = [], []
+    # Compute the common asset scale once, not once per feature block.
+    asset_sigma = ts_std(returns.shift(1), hl) if asset_vol else None
     numerator = pd.Series(0., index=returns.index) if meta else None
     gross = numerator.copy() if meta else None
     for X in blocks:
         if not X.index.equals(returns.index):
             raise ValueError('Feature and return indexes must match exactly.')
-        pnl = standalone_pnl(X, returns, hl)
+        pnl = _pnl_with_asset_sigma(X, returns, hl, asset_sigma)
         if np.isinf(pnl.to_numpy()).any():
             raise ValueError('Infinite P&L: inspect transformed features and their variance.')
         if meta:
@@ -140,11 +156,11 @@ def combine_pnls(pnl, hl=252*288, positive_only=False):
     return numerator.div(gross.replace(0, np.nan)).fillna(0).rename('meta_pnl')
 
 
-def backtest(signal, returns, hl=288*21):
-    """signal / EWMstd(signal)^2 * return; forecasts must already be aligned."""
+def backtest(signal, returns, hl=288*21, *, asset_vol=False):
+    """Standalone sizing, with optional lagged asset-vol diagnostic; align forecasts first."""
     if not signal.index.equals(returns.index):
         raise ValueError('Signal and return indexes must match.')
-    return standalone_pnl(signal, returns, hl).replace([np.inf, -np.inf], np.nan)
+    return standalone_pnl(signal, returns, hl, asset_vol=asset_vol).replace([np.inf, -np.inf], np.nan)
 
 
 def forecast_metrics(prediction, target):

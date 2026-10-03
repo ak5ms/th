@@ -9,7 +9,7 @@ python -m pytest -q
 python run_eda.py
 ```
 
-Or open `notebooks/01_eda.ipynb` in Jupyter and Run All. `DATA_PATH` optionally overrides the Parquet path.
+Or open `notebooks/takehome.ipynb` in Jupyter and Run All. `DATA_PATH` optionally overrides the Parquet path.
 
 ## Outputs
 
@@ -56,3 +56,9 @@ Each feature-family P&L panel highlights its own lagged EWM-Sharpe combination i
 ## Signal-only normalization
 
 `notebooks/02_normalization.ipynb` compares eight causal sizing rules on the previous-fold Ridge/Lasso forecasts, all 100 raw alphas, and simulated two-year label blackouts. `normalization.signal_weights` supplies floored/capped standard-deviation, RMS, and inverse-variance scores without asset volatility. The old backtest stays unchanged for reproducibility. All experimental output is embedded in the evaluated notebook.
+
+## Isolated asset-volatility diagnostic
+
+`notebooks/takehome_asset_vol.ipynb` is a copy of the main notebook with an additional comparison immediately after the fixed-penalty OOS model chart. It evaluates `X / (ts_std(X, hl) * ts_std(returns.shift(1), hl)) * returns` on the same fitted forecasts, with row alignment and matched scoring observations. Original feature analyses and all fitting/sweep logic are unchanged. The helper opt-in is `backtest(..., asset_vol=True)` (also supported by `standalone_pnl` and `evaluate_features`); the default remains feature-variance sizing. The copy shows unrescaled curves plus scale-independent spike diagnostics. This needs historical asset returns and is not intended for the OOS label blackout. Open this notebook in Jupyter and Run All to reproduce the full analysis; `python run_eda.py` continues to execute only the main notebook.
+
+Both notebooks retain only the one-row oracle lookahead, plus an h=0 causal control, with a common endpoint excluding one target row. Coefficient plots omit the first `HL` rows; estimation, full histories and one-row prediction lags are unchanged.

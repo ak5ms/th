@@ -9,7 +9,7 @@ from nbclient import NotebookClient
 
 if __name__ == '__main__':
     root = Path(__file__).resolve().parent
-    path = root / 'notebooks/01_eda.ipynb'
+    path = root / 'notebooks/takehome.ipynb'
     nb = nbformat.read(path, as_version=4)
     nb.cells = [c for c in nb.cells if 'execution_summary' not in c.metadata.get('tags', [])]
     started = perf_counter()

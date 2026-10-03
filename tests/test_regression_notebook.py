@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def tagged(tag):
-    nb = nbformat.read(ROOT / 'notebooks/01_eda.ipynb', as_version=4)
+    nb = nbformat.read(ROOT / 'notebooks/takehome.ipynb', as_version=4)
     cells = [c for c in nb.cells if tag in c.metadata.get('tags', [])]
     assert len(cells) == 1, f'Expected one cell tagged {tag}'
     return cells[0].source
@@ -48,6 +48,6 @@ def test_every_feature_family_requests_its_own_overlay():
     for family, data in [('raw', 'raw'), ('dszl', 'dszl'), ('interaction', 'interaction'), ('residual', 'residual')]:
         source = tagged(f'family_overlay_{family}')
         assert f"meta_daily={data}_meta.resample('D').sum()" in source
-    nb = nbformat.read(ROOT / 'notebooks/01_eda.ipynb', as_version=4)
+    nb = nbformat.read(ROOT / 'notebooks/takehome.ipynb', as_version=4)
     real = next(c for c in nb.cells if 'all_predictor_fit' in c.metadata.get('tags', []))
     assert 'store_history=True' in real.source

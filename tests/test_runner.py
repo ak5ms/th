@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def stage(tmp_path, source):
     script = tmp_path / 'run_eda.py'
     script.write_text((ROOT / 'run_eda.py').read_text(), encoding='utf-8')
-    path = tmp_path / 'notebooks/01_eda.ipynb'
+    path = tmp_path / 'notebooks/takehome.ipynb'
     path.parent.mkdir()
     nbformat.write(nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell(source)]), path)
     return script, path
@@ -22,7 +22,7 @@ def test_runner_only_writes_notebook_and_splits(tmp_path):
     script, path = stage(tmp_path, "from pathlib import Path\nPath('splits.json').write_text('{}')\nprint('training-only diagnostic')")
     runpy.run_path(str(script), run_name='__main__')
     assert {p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob('*') if p.is_file()} == {
-        'run_eda.py', 'notebooks/01_eda.ipynb', 'splits.json',
+        'run_eda.py', 'notebooks/takehome.ipynb', 'splits.json',
     }
     nb = nbformat.read(path, as_version=4)
     assert nb.cells[0].execution_count == 1
