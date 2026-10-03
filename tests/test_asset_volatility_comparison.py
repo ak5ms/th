@@ -104,7 +104,8 @@ def base_notebook():
 def test_main_notebook_is_renamed_and_comparison_is_a_separate_copy():
     assert (ROOT / 'notebooks/takehome.ipynb').exists(), 'Main notebook has not been renamed'
     assert not (ROOT / 'notebooks/01_eda.ipynb').exists()
-    assert (ROOT / 'notebooks/takehome_asset_vol.ipynb').exists()
+    assert not (ROOT / 'notebooks/takehome_asset_vol.ipynb').exists()
+    assert (ROOT / 'notebooks/asset_vol.ipynb').exists()
 
 
 def test_only_h1_is_kept_as_a_lookahead_with_h0_control():

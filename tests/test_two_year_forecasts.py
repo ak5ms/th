@@ -121,42 +121,8 @@ def test_explicit_folds_reject_future_training_and_overlap():
         fitters.walk_forward_sweep({'ridge':fitters.BatchRidge(3)}, X, y, folds=bad)
 
 
-def test_forecast_export_is_raw_return_predictions_and_blackout_only(tmp_path):
-    assert (ROOT/'src/takehome/forecast.py').exists(), 'Missing forecast export'
-    from takehome.forecast import write_lasso_forecasts
-    index, X, y = design()
-    raw = pd.DataFrame({'x1': X[:,0], 'x99':X[:,1], 'cashflow':X[:,2],
-                        'volume':1., 'ret_5m':y}, index=index.rename('msgStamp'))
-    cutoff = index[-1] - pd.DateOffset(years=2)
-    raw.loc[raw.index >= cutoff, 'ret_5m'] = np.nan
-    raw.iloc[5, raw.columns.get_loc('ret_5m')] = np.nan
-    data = tmp_path/'input.parquet'; raw.to_parquet(data)
-    result = write_lasso_forecasts(data, tmp_path/'output', hl=10, alpha=.03)
-    submitted = pd.read_parquet(result['oos_parquet'])
-    assert list(submitted.columns) == ['forecast']
-    assert submitted.index.equals(raw.loc[raw.index >= cutoff].index)
-    assert np.isfinite(submitted.forecast).all()
-    train = raw.loc[(raw.index>=cutoff-pd.DateOffset(years=2)) & (raw.index<cutoff)]
-    xx = train[['x1','x99','cashflow']].to_numpy()
-    ref=fitters.BatchLasso(3,2**(-1/10),.03,fit_intercept=True).fit(xx,train.ret_5m.to_numpy(),
-                            W=np.isfinite(train.ret_5m).astype(float).to_numpy())
-    assert_allclose(submitted.forecast,ref.predict(raw.loc[submitted.index,['x1','x99','cashflow']].to_numpy()),atol=1e-8)
-    validation=pd.read_parquet(result['validation_parquet'])
-    assert validation.index.max() < pd.Timestamp(result['metadata']['research_cutoff'])
-    assert validation.forecast.notna().all()
-    csv=pd.read_csv(result['oos_csv'])
-    assert list(csv.columns)==['msgStamp','forecast']
-    assert_allclose(csv.forecast,submitted.forecast,rtol=1e-12,atol=1e-14)
-
-
-def test_export_rejects_non_withheld_final_two_years(tmp_path):
-    assert (ROOT/'src/takehome/forecast.py').exists(), 'Missing forecast export'
-    from takehome.forecast import write_lasso_forecasts
-    index,X,y=design()
-    raw=pd.DataFrame({'x1':X[:,0],'cashflow':X[:,1],'volume':1.,'ret_5m':y},index=index.rename('msgStamp'))
-    data=tmp_path/'input.parquet';raw.to_parquet(data)
-    with pytest.raises(ValueError,match='withheld|blackout|missing'):
-        write_lasso_forecasts(data,tmp_path/'output')
+# The old standalone Lasso-export tests are replaced by actual notebook-cell
+# integration tests in test_submission_revision.py (the export now uses Ridge).
 
 
 def test_all_notebooks_use_the_same_two_year_fold_generator():
@@ -167,7 +133,7 @@ def test_all_notebooks_use_the_same_two_year_fold_generator():
         assert 'train_size=None' not in code.replace(' ',''), path.name
         assert 'min_train_size=252*288' not in code.replace(' ',''), path.name
         if path.stem.startswith('takehome'):
-            assert any('batch_forecast_export' in c.metadata.get('tags',[]) for c in nb.cells)
+            assert any('submission_export' in c.metadata.get('tags',[]) for c in nb.cells)
 
 
 def test_explicit_partial_fold_history_reconstructs_only_predicted_rows():

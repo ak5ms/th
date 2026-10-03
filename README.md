@@ -1,72 +1,50 @@
 # ESc1 take-home
 
-## Setup and execution
+The submission workflow is **`notebooks/takehome.ipynb`**. It runs from data checks and feature research through chronological validation to the final raw-return Ridge forecasts. `notebooks/asset_vol.ipynb` is a separate, smaller signal-only sizing audit. Despite its historical filename, it does not use asset-return volatility and does not generate submission forecasts.
+
+## Reproduce
+
+Use Python 3.11+ and install `requirements.txt`. Place `ESc1_signal_components_5min (6).parquet` in the repository root, or set `DATA_PATH` to its location. The source dataset is stored with Git LFS in the repository; a source archive without LFS materialization is not the data file.
 
 ```bash
-git lfs pull
 python -m pip install -r requirements.txt
-python -m pytest -q
 python run_eda.py
 ```
 
-Or open `notebooks/takehome.ipynb` in Jupyter and Run All. `DATA_PATH` optionally overrides the Parquet path.
+The runner starts a fresh Jupyter kernel, clears every old output, executes the complete main notebook, and atomically saves it only after all cells succeed. It prints progress by cell and records full-execution provenance. All rows and all feature pairs are used, so the complete research notebook is substantially more expensive than a single model fit. Arrow row batches and eight-column feature batches limit temporary memory; no observations or pairs are sampled.
 
-## Outputs
+Run the diagnostic separately:
 
-The evaluated notebook contains the figures, complete column-coverage table, cashflow-exception sample and complete date counts, package versions, interpretation notes, and training-only summary. The runner saves it in place and records its execution time in a final notebook note. The notebook additionally exports timestamped batched-Lasso validation forecasts under `forecasts/`. `python run_forecast.py` also generates the separate final withheld-period predictions. No standalone EDA report is generated.
+```bash
+NOTEBOOK_PATH=notebooks/asset_vol.ipynb python run_eda.py
+```
 
-## Data contract
+Opening either notebook in Jupyter and choosing **Restart Kernel and Run All** also runs its displayed code. `FORECAST_OUTPUT_DIR` can change the main notebook's export directory. There is no separate forecast runner or model-specific export function.
 
-- Index: sorted, unique `msgStamp` timestamps, preserving their supplied timezone.
-- Labeled span: first through last non-null `ret_5m`.
-- Cutoff: `first + 0.8 * (last - first)`; elapsed time, not row count.
-- Training: `[first, cutoff)`; reserved test: `[cutoff, last]`. Rows outside the labeled span are excluded.
-- Only training rows enter diagnostics, normalization, plots and the cashflow calculation. Internal nulls remain null; there is no forward filling or row subsampling.
-- The scatter matrix limits displayed feature columns, not observations. Other diagnostics cover all 99 features where defined.
-- Earlier EDA versions inspected the complete dataset. The reserved block is excluded from subsequent research, but is not retrospectively an untouched holdout.
+## Configuration and inference contract
 
-`src/takehome/data.py` holds the split and coverage helpers, `eda.py` the statistics, and `plots.py` a small heatmap helper. The notebook shows the cashflow expression directly.
+The main notebook declares and displays one fixed configuration: all 100 predictors, including x100=cashflow/volume; time-of-day `dszl(10)` features without demeaning; Ridge alpha=0.01 with an unpenalized intercept; unit weights on finite labels; a 6,048-row EWM fitting half-life; and rolling two-calendar-year training followed by two-calendar-year frozen forecasts, advanced by two years. Missing transformed model inputs are zero-imputed, not targets. The initial EWM and dszl state uses zero/nonfinite-as-missing, `ignore_na=True`; regression decay advances by input row.
 
-The distribution screen uses the full-sample Hartigan dip statistic, quartile skew and point-mass checks, not a normality test. Its thresholds are descriptive. Cashflow is hypothesized to be signed trade flow or quote imbalance; the cumulative curve is exploratory, not a validated executable backtest.
+Ridge/Lasso sensitivity sweeps share exactly the same transformed design and calendar windows. Frozen streaming Lasso replays only each corresponding two-year training window; live streaming Lasso is an explicitly separate continuous online baseline. The h=1 oracle and AR(2) feature-forecast experiments are grouped under Transform experiments, before joint model fitting. The coefficient plot omits its first `HL` rows only for display.
 
-## Standalone transformation experiments
+All active main backtest plots use the same explicit **lagged signal standard deviation / 25%-of-first-scale floor / absolute exposure cap of 3**. This policy receives signals only; returns enter afterward for scoring. The normalizer is not reset at folds. It bounds exposure, not asset returns or dollar losses; no P&L is clipped. The normalization audit reconstructs legacy raw-unit and past-anchored Original shape controls and reports jump concentration. The Original shape multiplier changes units, not concentration. Raw forecasts remain unscaled for calibration and export. No return-volatility model or t-stat sizing has been implemented.
 
-The notebook separately displays cumulative P&L and a daily-Sharpe histogram for time-of-day standardization, every distinct raw pair product, and both directed pair residuals. `features.py` holds `dszl`, `pair_residual`, `pairwise_features` and `evaluate_features`; `plots.py` provides `display_results`. Pairs are column-batched, not row-sampled. Residuals use the existing lasso at `alpha=0`, `W=1`, with an intercept and pre-update predictions. All output stays inside the evaluated notebook.
+## Validation and submission
 
-## Fitting and baseline interfaces
+The first 80% of the labeled elapsed-time span is the research sample; its last 20% is not scored or used to choose settings in this notebook. Earlier versions inspected a broader sample, so that reservation is not retrospectively pristine. Walk-forward validation and the selected configuration's backtest are displayed inside research only.
 
-`fitters.py` includes the Numba streaming estimator, independent `CvxpyWeightedLasso`, and the `BatchedFitters` walk-forward adapter. Both history interfaces accept `lag=1` for prior-estimate alignment. Tests reconcile original-unit objectives and predictions against CVXPY, not sklearn. `features.combine_pnls` computes a lagged, globally gross-normalized intrabar EWM-Sharpe blend, also inside column-batched pair evaluation. `sessions.py` separates exchange-open instants, trailing trading bars and empirical quote availability using CME holiday rules and dated historical-hour corrections. See the notebook for the calendar audit and limitations.
+At the end, the notebook reuses **the same `RIDGE_CONFIG`** to fit on the two calendar years before the final two-year label blackout. This final fit includes available labels from the research-reserved interval, without scoring them or choosing a new penalty. Its coefficients stay frozen for the full blackout. The same-clock-time dszl state is carried from the original feature-history start through the final fit and inference; it uses no return labels. Every blackout target is checked to be missing, and every supplied blackout row must receive a finite prediction.
 
-## Overlay and calibration diagnostics
+`forecasts/` contains:
 
-Each feature-family P&L panel highlights its own lagged EWM-Sharpe combination in purple on a secondary right y-axis, without multiplying its values. The real-data regression shows coefficient histories and a full-training scatter of prior-row forecasts against targets, including OLS and W-weighted calibration slopes. Both coefficient and intercept histories are lagged. Calibration is diagnostic only: predictions are not rescaled to force slope one.
+- `ridge_oos.csv` / `.parquet`: submission predictions in raw `ret_5m` units.
+- `ridge_walk_forward.csv` / `.parquet`: the exact research forecasts supporting the selected-model backtest.
+- `ridge_metadata.json`, `ridge_research_windows.csv`, `ridge_coefficients.csv`: configuration, split/use policy, coverage, checksums, window boundaries and final parameters.
 
-## All-predictor regression backtests
+CSV columns are `msgStamp,forecast`; Parquet preserves the timezone-aware index. Neither export contains positions, future-return volatility, oracle inputs or an extra forecast shift. Old Lasso exports and the superseded normalization/comparison notebooks have been removed to avoid submitting an obsolete model.
 
+## Open methodological items
 
-## Causal regression comparison
+Red TODOs remain visible in the notebook as requested: investigate a valid uncertainty-aware forecast t-stat rather than temporal forecast-volatility sizing, and assess volume-weighted fitting as a proxy for feasible trade size. Neither is claimed implemented. Backtests are gross diagnostics; transaction costs, decision-time feature availability and the supplied forward-return timing still need validation. A bounded exposure policy does not establish alpha, executable profitability or a constant realized risk target.
 
-`StreamingWeightedLasso_` is the Numba jitclass; `StreamingWeightedLasso` is its Python interface. `BatchRidge` and CVXPY `BatchLasso` share the `BatchedFitters`/`walk_forward_sweep` interface, storing fold snapshots and next-fold OOS predictions. `stream_at_folds` isolates the effect of live versus frozen refitting. The notebook includes x100 = cashflow/volume, matched-loss audits, OOS penalty sweeps, and explicitly noncausal predictor-lead experiments. All use the original training split; forecast exports are described below.
-
-## One-step alpha forecasts
-
-`fitters.forecast_alpha` learns each alpha from its own two lagged values using the streaming jitclass; forecasts are indexed by decision time. `forecast_alpha_blocks` limits column memory. The notebook compares these causal forecasts against matched persistence and explicitly noncausal future-value controls, and plots the fixed hyperparameter grid. All production EWM standard deviations use zero/nonfinite-as-missing inputs and `ignore_na=True` through `features.ts_std` / `ewm_observed`. The Ridge diagnostic separates forecast scale from inverse-variance exposure; zero handling is not a leverage cap.
-
-
-## Signal-only normalization
-
-`notebooks/02_normalization.ipynb` compares eight causal sizing rules on the previous-fold Ridge/Lasso forecasts, all 100 raw alphas, and simulated two-year label blackouts. `normalization.signal_weights` supplies floored/capped standard-deviation, RMS, and inverse-variance scores without asset volatility. The old backtest stays unchanged for reproducibility. All experimental output is embedded in the evaluated notebook.
-
-## Isolated asset-volatility diagnostic
-
-`notebooks/takehome_asset_vol.ipynb` is a copy of the main notebook with an additional comparison immediately after the fixed-penalty OOS model chart. It evaluates `X / (ts_std(X, hl) * ts_std(returns.shift(1), hl)) * returns` on the same fitted forecasts, with row alignment and matched scoring observations. Original feature analyses and all fitting/sweep logic are unchanged. The helper opt-in is `backtest(..., asset_vol=True)` (also supported by `standalone_pnl` and `evaluate_features`); the default remains feature-variance sizing. The copy shows unrescaled curves plus scale-independent spike diagnostics. This needs historical asset returns and is not intended for the OOS label blackout. Open this notebook in Jupyter and Run All to reproduce the full analysis; `python run_eda.py` continues to execute only the main notebook.
-
-Both notebooks retain only the one-row oracle lookahead, plus an h=0 causal control, with a common endpoint excluding one target row. Coefficient plots omit the first `HL` rows; estimation, full histories and one-row prediction lags are unchanged.
-
-## Two-year walk-forward forecasts
-
-All three notebooks use rolling **two-calendar-year training / two-calendar-year prediction** windows, stepped by two calendar years; the last research block may be partial. `calendar_walk_forward_folds` resolves dates to row bounds, and `walk_forward_sweep(..., folds=folds)` shares the same windows across Ridge/Lasso penalties. Frozen streaming fits replay only the matching two-year training window; the live streaming series is a separately labeled continuous online baseline. Existing EWM half-lives are unchanged.
-
-Run `python run_forecast.py` to write `forecasts/batched_lasso_walk_forward.csv`/`.parquet` for validation inside the original research split, and `forecasts/batched_lasso_oos.csv`/`.parquet` for the assignment's terminal two-year blackout. CSV columns are `msgStamp,forecast`; Parquet retains the timezone-aware index. The fixed model is BatchLasso with alpha=1e-5, intercept, unit weights on observed labels, the existing 6,048-row decay half-life and all 100 raw predictors including x100=cashflow/volume. Forecasts are raw ret_5m predictions: no signal/asset-volatility sizing, oracle or extra shift. Nonfinite predictors retain the original explicit zero-imputation; targets are never filled.
-
-The final blackout fit uses the two years immediately before the blackout, including available labels from the research-reserved block, without evaluating those labels or selecting a new alpha. It is frozen for the complete two-year blackout and asserts that all blackout targets are missing. Internal missing labels are not mistaken for the blackout. The original research-only EDA boundary remains unchanged. `batched_lasso_fold_windows.csv` and `batched_lasso_metadata.json` record exact boundaries and coverage. `DATA_PATH` and `FORECAST_OUTPUT_DIR` may override the input and output locations.
+Run `pytest -q` for calendar-window, numerical fitter, prefix-causality, normalization, notebook alignment and actual inline-export tests. `run_eda.py` separately verifies every executed cell and embeds its run provenance.

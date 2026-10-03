@@ -36,17 +36,23 @@ def _pnl_with_asset_sigma(X, returns, hl, asset_sigma=None):
 
 
 def standalone_pnl(X: pd.DataFrame, returns: pd.Series, hl: int = 288 * 21, *,
-                   asset_vol: bool = False):
+                   asset_vol: bool = False, normalization: dict | None = None):
     """Default: signal / feature_variance * return, unchanged.
 
     Experimental asset_vol=True uses signal / (feature_std * lagged_return_std).
     Both scales use ts_std's existing missing/zero and warm-up conventions; the
     asset scale sees returns.shift(1), never the current realized return. This
     diagnostic requires observed return history and is not a blackout solution.
-    No variance floor, leverage cap or filling is added.
+    The legacy default adds no floor or cap. Pass normalization=dict(...) to
+    opt into signal_weights (signal history only), independently of scoring returns.
     """
     if not X.index.equals(returns.index):
         raise ValueError('Signal and return indexes must match.')
+    if normalization is not None:
+        if asset_vol:
+            raise ValueError('Choose normalization or asset_vol, not both.')
+        from .normalization import signal_weights
+        return signal_weights(X, hl, **normalization).mul(returns, axis=0)
     asset_sigma = ts_std(returns.shift(1), hl) if asset_vol else None
     return _pnl_with_asset_sigma(X, returns, hl, asset_sigma)
 
@@ -63,6 +69,26 @@ def dszl(X, hl: int = 10):
     return X.groupby(X.index.time, sort=False, group_keys=False).apply(
         lambda group: ts_standardize(group, hl)
     ).reindex(X.index)
+
+
+def dszl_design(X: pd.DataFrame, hl: int = 10, batch_size: int = 8) -> pd.DataFrame:
+    """Causal dszl features, then explicit zero-imputation, in bounded column batches.
+
+    State uses the entire supplied feature prefix and must not reset at folds.
+    No targets or asset-return scale enter this transformation. The returned
+    float64 C-contiguous matrix can be shared by all regression candidates.
+    """
+    _time_index(X)
+    if (not isinstance(X, pd.DataFrame) or not X.columns.is_unique or not len(X.columns)
+            or isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1
+            or isinstance(hl, bool) or not isinstance(hl, int) or hl < 2):
+        raise ValueError('Require unique feature columns, integer hl >= 2 and positive batch_size.')
+    matrix = np.empty(X.shape, dtype=np.float64, order='C')
+    for start in range(0, X.shape[1], batch_size):
+        block = dszl(X.iloc[:, start:start+batch_size], hl=hl).to_numpy(dtype=float, copy=True)
+        np.nan_to_num(block, copy=False, nan=0., posinf=0., neginf=0.)
+        matrix[:, start:start+batch_size] = block
+    return pd.DataFrame(matrix, index=X.index, columns=X.columns, copy=False)
 
 
 def pair_residual(y: pd.Series, x: pd.Series, hl: int = 288 * 21):
@@ -100,8 +126,15 @@ def pairwise_features(X: pd.DataFrame, kind='product', hl: int = 288 * 21, batch
 
 
 def evaluate_features(blocks, returns: pd.Series, hl: int = 288 * 21, *,
-                      meta=False, meta_hl=252*288, positive_only=False, asset_vol=False):
-    """Same standalone P&L per block; retain only daily P&L and coverage."""
+                      meta=False, meta_hl=252*288, positive_only=False, asset_vol=False,
+                      normalization: dict | None = None):
+    """Same standalone P&L per block; retain daily P&L, coverage and sizing audit.
+
+    normalization explicitly opts into signal-only sizing; the legacy default
+    remains unchanged. Column batching never resets the time-series state.
+    """
+    if asset_vol and normalization is not None:
+        raise ValueError('Choose normalization or asset_vol, not both.')
     daily, summaries = [], []
     # Compute the common asset scale once, not once per feature block.
     asset_sigma = ts_std(returns.shift(1), hl) if asset_vol else None
@@ -110,7 +143,13 @@ def evaluate_features(blocks, returns: pd.Series, hl: int = 288 * 21, *,
     for X in blocks:
         if not X.index.equals(returns.index):
             raise ValueError('Feature and return indexes must match exactly.')
-        pnl = _pnl_with_asset_sigma(X, returns, hl, asset_sigma)
+        weights = None
+        if normalization is None:
+            pnl = _pnl_with_asset_sigma(X, returns, hl, asset_sigma)
+        else:
+            from .normalization import signal_weights
+            weights = signal_weights(X, hl, **normalization)
+            pnl = weights.mul(returns, axis=0)
         if np.isinf(pnl.to_numpy()).any():
             raise ValueError('Infinite P&L: inspect transformed features and their variance.')
         if meta:
@@ -124,6 +163,12 @@ def evaluate_features(blocks, returns: pd.Series, hl: int = 288 * 21, *,
             'first_pnl_msgStamp': pnl.apply(lambda x: x.first_valid_index()),
             'last_pnl_msgStamp': pnl.apply(lambda x: x.last_valid_index()),
         }))
+        if weights is not None:
+            summaries[-1]['max_abs_weight'] = weights.abs().max()
+            cap = normalization.get('cap', 3.)
+            summaries[-1]['capped_fraction'] = (
+                weights.abs().ge(cap - 1e-12).sum().div(weights.count().replace(0, np.nan))
+                if cap is not None else 0.)
         daily.append(days)
     if not daily:
         raise ValueError('At least one feature block is required.')
@@ -156,11 +201,11 @@ def combine_pnls(pnl, hl=252*288, positive_only=False):
     return numerator.div(gross.replace(0, np.nan)).fillna(0).rename('meta_pnl')
 
 
-def backtest(signal, returns, hl=288*21, *, asset_vol=False):
+def backtest(signal, returns, hl=288*21, *, asset_vol=False, normalization: dict | None = None):
     """Standalone sizing, with optional lagged asset-vol diagnostic; align forecasts first."""
     if not signal.index.equals(returns.index):
         raise ValueError('Signal and return indexes must match.')
-    return standalone_pnl(signal, returns, hl, asset_vol=asset_vol).replace([np.inf, -np.inf], np.nan)
+    return standalone_pnl(signal, returns, hl, asset_vol=asset_vol, normalization=normalization).replace([np.inf, -np.inf], np.nan)
 
 
 def forecast_metrics(prediction, target):

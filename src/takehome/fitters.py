@@ -658,9 +658,18 @@ def stream_at_folds(model, X, y, folds, W=None, *, audit_folds=()):
         raise ValueError('Use a fresh streaming model for a full walk-forward replay.')
     folds = _validated_folds(folds, len(y))
     if any(f['train_start'] != 0 for f in folds):
-        live = model.fit_predict(X, y, W=w)
+        # Replay identically, but distinguish unscored warm-up failures from
+        # failures in updates that can affect the scored live path.
+        first = folds[0]['predict_start']
+        live = np.full(len(y), np.nan)
+        live[:first] = model.fit_predict(X[:first], y[:first], W=w[:first])
+        warmup_failures = model.n_failed_
+        warmup_converged = model.converged_
+        live[first:] = model.fit_predict(X[first:], y[first:], W=w[first:])
+        live_failures = model.n_failed_ - warmup_failures
         frozen = np.full(len(y), np.nan)
         coefs, offsets, states, errors, failures = [], [], {}, [], []
+        converged, tolerances = [], []
         for i, fold in enumerate(folds):
             a, b, c, d = (fold[k] for k in ('train_start','train_stop','predict_start','predict_stop'))
             checkpoint = StreamingWeightedLasso(model.n_features, model.decay, model.alpha,
@@ -670,13 +679,18 @@ def stream_at_folds(model, X, y, folds, W=None, *, audit_folds=()):
             frozen[c:d] = checkpoint.predict(X[c:d])
             coefs.append(checkpoint.coef.copy()); offsets.append(checkpoint.intercept_)
             errors.append(checkpoint.kkt_violation_); failures.append(checkpoint.n_failed_)
+            converged.append(checkpoint.converged_); tolerances.append(checkpoint.kkt_tolerance_)
             if i in audit_folds and checkpoint.Wsum > 0:
                 states[i] = (checkpoint.mean_x_.copy(), checkpoint.mean_y_,
                              checkpoint.C_.copy()/checkpoint.Wsum,
                              checkpoint.c_.copy()/checkpoint.Wsum)
         return dict(live=live, frozen=frozen, coefs=np.array(coefs),
                     intercepts=np.array(offsets), states=states,
-                    kkt_at_folds=np.array(errors), frozen_failed_updates=np.array(failures))
+                    kkt_at_folds=np.array(errors), frozen_failed_updates=np.array(failures),
+                    frozen_converged=np.array(converged), frozen_kkt_tolerances=np.array(tolerances),
+                    live_failed_warmup_updates=warmup_failures,
+                    live_warmup_converged=warmup_converged,
+                    live_failed_oos_updates=live_failures)
     live, frozen = np.full(len(y), np.nan), np.full(len(y), np.nan)
     coefs, offsets, states, errors = [], [], {}, []
     last = 0

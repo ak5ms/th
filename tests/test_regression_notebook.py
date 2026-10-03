@@ -1,4 +1,4 @@
-"""Exercise the actual notebook prediction cell so chart alignment cannot drift."""
+"""Exercise the actual notebook prediction cell with raw columns different from its dszl design."""
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,7 +19,8 @@ def tagged(tag):
 
 def run_predictions(X, beta, bias, valid):
     df = pd.DataFrame(X, columns=['x1', 'x2'], index=pd.date_range('2020-01-01', periods=len(X)))
-    ns = dict(pd=pd, np=np, df=df, fit_columns=['x1', 'x2'], valid_fit=np.asarray(valid),
+    ns = dict(pd=pd, np=np, df=df*1000, X_fit=np.nan_to_num(np.asarray(X,float),nan=0.,posinf=0.,neginf=0.),
+              fit_columns=['x1', 'x2'], valid_fit=np.asarray(valid),
               fitter=SimpleNamespace(get_coefs=lambda: np.asarray(beta, float),
                                      get_intercepts=lambda: np.asarray(bias, float)))
     exec(tagged('lagged_regression_predictions'), ns)
