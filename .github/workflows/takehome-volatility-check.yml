@@ -10,19 +10,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          lfs: true
-      - name: Package working inputs
+          python-version: '3.13'
+      - name: Package offline test dependencies
         run: |
-          mkdir -p /tmp/takehome-workspace
-          git archive HEAD | tar -x -C /tmp/takehome-workspace
-          cp "ESc1_signal_components_5min (6).parquet" /tmp/takehome-workspace/
-          git rev-parse HEAD > /tmp/takehome-workspace/BASE_COMMIT.txt
-          tar -czf /tmp/takehome-workspace.tar.gz -C /tmp/takehome-workspace .
+          python -m pip download --only-binary=:all: --dest /tmp/takehome-wheels 'pyarrow>=15,<30' 'cvxpy>=1.6,<2' 'diptest>=0.10,<1' 'pandas_market_calendars==5.4.0'
       - uses: actions/upload-artifact@v4
         with:
-          name: takehome-working-inputs
-          path: /tmp/takehome-workspace.tar.gz
+          name: takehome-offline-dependencies
+          path: /tmp/takehome-wheels
           retention-days: 1
           compression-level: 0
