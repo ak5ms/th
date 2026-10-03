@@ -5,6 +5,10 @@ on:
     paths: [.github/workflows/prepare-submission.yml]
 permissions:
   contents: write
+  actions: write
+concurrency:
+  group: prepare-submission-notebooks
+  cancel-in-progress: true
 jobs:
   execute-and-verify:
     runs-on: ubuntu-latest
@@ -15,6 +19,14 @@ jobs:
       MKL_NUM_THREADS: '1'
       PYTHONUNBUFFERED: '1'
     steps:
+      - name: Cancel only the superseded execution created for this revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(gh api repos/${GITHUB_REPOSITORY}/actions/runs/37159200366 --jq .status)
+          if [ "$status" != completed ]; then
+            gh api --method POST repos/${GITHUB_REPOSITORY}/actions/runs/37159200366/cancel
+          fi
       - uses: actions/checkout@v4
         with:
           ref: agent/eda-notebook
@@ -39,8 +51,7 @@ jobs:
           for name,ops in m['files'].items():
               p=Path(name)
               lines=p.read_text().splitlines(keepends=True) if p.exists() else []
-              for op in reversed(ops):
-                  lines[op['lo']:op['hi']]=[op['lines']]
+              for op in reversed(ops):lines[op['lo']:op['hi']]=[op['lines']]
               p.parent.mkdir(parents=True,exist_ok=True)
               p.write_text(''.join(lines))
           for name,spec in m['notebooks'].items():
@@ -60,10 +71,10 @@ jobs:
                   cells.append(c)
               nb=nbformat.v4.new_notebook(cells=cells,metadata=spec['metadata'])
               nbformat.validate(nb);nbformat.write(nb,p)
-          for name in m['delete']:
-              Path(name).unlink(missing_ok=True)
+          for name in m['delete']:Path(name).unlink(missing_ok=True)
           print('APPLIED',len(m['files']),'source revisions and',len(m['notebooks']),'notebooks')
           PY
+          python .maintenance/audit_stream_convergence.py
       - name: Full test suite before execution
         run: |
           set -o pipefail
@@ -136,8 +147,8 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm .github/workflows/prepare-submission.yml .maintenance/submission-part-0.b64 .maintenance/submission-part-1.b64 .maintenance/submission-part-2.b64
-          git add -A README.md run_eda.py run_forecast.py src/takehome/data.py src/takehome/features.py src/takehome/forecast.py tests notebooks forecasts splits.json
+          git rm .github/workflows/prepare-submission.yml .maintenance/submission-part-0.b64 .maintenance/submission-part-1.b64 .maintenance/submission-part-2.b64 .maintenance/audit_stream_convergence.py
+          git add -A README.md run_eda.py run_forecast.py src/takehome/data.py src/takehome/features.py src/takehome/fitters.py src/takehome/forecast.py tests notebooks forecasts splits.json
           git diff --cached --check
           git commit -m 'Consolidate submission notebook with dszl Ridge, bounded signal sizing and inline forecasts'
           git push origin HEAD:agent/eda-notebook
