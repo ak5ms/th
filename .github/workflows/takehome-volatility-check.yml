@@ -1,0 +1,28 @@
+name: Takehome volatility comparison
+on:
+  push:
+    branches: [agent/eda-notebook]
+    paths: [.github/workflows/takehome-volatility-check.yml]
+permissions:
+  contents: read
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: Package working inputs
+        run: |
+          mkdir -p /tmp/takehome-workspace
+          git archive HEAD | tar -x -C /tmp/takehome-workspace
+          cp "ESc1_signal_components_5min (6).parquet" /tmp/takehome-workspace/
+          git rev-parse HEAD > /tmp/takehome-workspace/BASE_COMMIT.txt
+          tar -czf /tmp/takehome-workspace.tar.gz -C /tmp/takehome-workspace .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: takehome-working-inputs
+          path: /tmp/takehome-workspace.tar.gz
+          retention-days: 1
+          compression-level: 0
