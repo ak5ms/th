@@ -139,7 +139,7 @@ def export_namespace(tmp_path, *, missing_blackout=True):
         WINDOW_YEARS=2,DSZL_HL=3,BATCH_SIZE=2,HL=5,SIGNAL_RULE=RULE,
         base_columns=base,fit_columns=list(transformed.columns),file_last=ix[-1],split=split,
         RIDGE_CONFIG=dict(decay=.97,fit_intercept=False),RIDGE_ALPHAS=[10.,.1,.001],
-        SELECTION_EMBARGO=1,display=lambda *a:None)
+        SELECTION_EMBARGO=1,SUBMISSION_FAMILY='Ridge nonneg',display=lambda *a:None)
     return ns,raw,transformed
 
 
@@ -153,12 +153,12 @@ def test_actual_notebook_exports_only_holdout_with_previous_validation_winner(tm
     valid=np.flatnonzero((raw.index>=refit)&(raw.index<boundary))[:-1]
     records=[]
     for alpha in ns['RIDGE_ALPHAS']:
-        m=ns['BatchRidge'](6,alpha=alpha,**ns['RIDGE_CONFIG']).fit(X.iloc[train].to_numpy(),raw.ret_5m.iloc[train].to_numpy())
+        m=ns['BatchRidge'](6,alpha=alpha,nonneg=True,**ns['RIDGE_CONFIG']).fit(X.iloc[train].to_numpy(),raw.ret_5m.iloc[train].to_numpy())
         mse=np.mean((m.predict(X.iloc[valid].to_numpy())-raw.ret_5m.iloc[valid])**2)
         records.append((mse,alpha))
     best=min(records,key=lambda r:r[0])[1]
     assert ns['submission_alpha']==best
-    model=ns['BatchRidge'](6,alpha=best,**ns['RIDGE_CONFIG']).fit(X.iloc[valid].to_numpy(),raw.ret_5m.iloc[valid].to_numpy())
+    model=ns['BatchRidge'](6,alpha=best,nonneg=True,**ns['RIDGE_CONFIG']).fit(X.iloc[valid].to_numpy(),raw.ret_5m.iloc[valid].to_numpy())
     out=raw.index>=boundary
     expected=pd.DataFrame({'forecast':model.predict(X.loc[out].to_numpy())},index=raw.index[out])
     assert_frame_equal(ns['submission_forecast'],expected,atol=1e-12,check_freq=False)
