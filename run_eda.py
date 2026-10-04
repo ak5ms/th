@@ -1,4 +1,4 @@
-"""Execute takehome.ipynb in a fresh kernel; NOTEBOOK_PATH selects the audit notebook."""
+"""Execute takehome.ipynb in a fresh kernel, including its single holdout Parquet export."""
 from datetime import datetime, timezone
 import os
 from pathlib import Path

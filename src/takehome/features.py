@@ -227,3 +227,31 @@ def with_cashflow_feature(df):
     name = f'x{max(numbers, default=0)+1}'
     ratio = df['cashflow'].div(df['volume'].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
     return df.assign(**{name: ratio})
+
+
+def raw_dszl_design(X: pd.DataFrame, hl: int = 10, batch_size: int = 8) -> pd.DataFrame:
+    """Concatenate [raw X, dszl(X, hl)] in that order, then zero-impute.
+
+    Raw observations remain in their original units; the transformed half uses
+    the entire supplied feature prefix and no target. No state resets at folds.
+    A single C-contiguous float64 output is shared across the model grid.
+    """
+    _time_index(X)
+    if (not isinstance(X, pd.DataFrame) or not X.columns.is_unique or not len(X.columns)
+            or isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1
+            or isinstance(hl, bool) or not isinstance(hl, int) or hl < 2):
+        raise ValueError('Require unique feature columns, integer hl >= 2 and positive batch_size.')
+    p = X.shape[1]
+    columns = [f'raw:{c}' for c in X.columns] + [f'dszl:{c}' for c in X.columns]
+    if len(set(columns)) != len(columns):
+        raise ValueError('String representations of feature names must be unique.')
+    matrix = np.empty((len(X), 2*p), dtype=np.float64, order='C')
+    for start in range(0, p, batch_size):
+        stop = min(start+batch_size, p)
+        block = X.iloc[:, start:stop].to_numpy(dtype=float, copy=True)
+        np.nan_to_num(block, copy=False, nan=0., posinf=0., neginf=0.)
+        matrix[:, start:stop] = block
+        block = dszl(X.iloc[:, start:stop], hl=hl).to_numpy(dtype=float, copy=True)
+        np.nan_to_num(block, copy=False, nan=0., posinf=0., neginf=0.)
+        matrix[:, p+start:p+stop] = block
+    return pd.DataFrame(matrix, index=X.index, columns=columns, copy=False)

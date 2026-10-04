@@ -101,11 +101,11 @@ def base_notebook():
     return nbformat.read(path if path.exists() else ROOT / 'notebooks/01_eda.ipynb', as_version=4)
 
 
-def test_main_notebook_is_renamed_and_comparison_is_a_separate_copy():
+def test_only_main_notebook_remains():
     assert (ROOT / 'notebooks/takehome.ipynb').exists(), 'Main notebook has not been renamed'
     assert not (ROOT / 'notebooks/01_eda.ipynb').exists()
     assert not (ROOT / 'notebooks/takehome_asset_vol.ipynb').exists()
-    assert (ROOT / 'notebooks/asset_vol.ipynb').exists()
+    assert not (ROOT / 'notebooks/asset_vol.ipynb').exists()
 
 
 def test_only_h1_is_kept_as_a_lookahead_with_h0_control():
@@ -124,18 +124,21 @@ def test_only_h1_is_kept_as_a_lookahead_with_h0_control():
     assert [row['h'] for row in ns['oracle_records']] == [0, 1]
 
 
-def test_coefficient_plot_omits_first_hl_rows_without_trimming_beta(monkeypatch):
+def test_selected_coefficient_plot_omits_warmup_without_trimming_model(monkeypatch):
+    from types import SimpleNamespace
     nb = base_notebook()
-    cell = next(c for c in nb.cells if c.cell_type == 'code' and 'ax.plot(clock,' in c.source)
-    X, r = sample(30)
-    original = X.copy(deep=True)
-    shown = []
-    monkeypatch.setattr(plt, 'show', lambda: shown.append(plt.gcf()))
-    ns = dict(np=np, pd=pd, plt=plt, beta=X, HL=7, yhat=r, online_yhat=r)
-    exec(cell.source, ns)
-    line = shown[0].axes[0].lines[0]
-    assert len(line.get_ydata()) == len(X)-7
-    assert_allclose(line.get_ydata(), X.iloc[7:, 0])
-    assert_allclose(line.get_xdata(), X.index[7:].as_unit('ns').asi8 / 86_400_000_000_000)
-    assert_frame_equal(ns['beta'], original)
+    cell = next(c for c in nb.cells if 'coefficient_paths' in c.metadata.get('tags',[]))
+    X, _ = sample(30)
+    folds=[dict(predict_start=10,predict_stop=20),dict(predict_start=20,predict_stop=30)]
+    coefs=[np.array([1.,2.]),np.array([3.,4.])]
+    original=np.array(coefs).copy()
+    shown=[]
+    monkeypatch.setattr(plt,'show',lambda:shown.append(plt.gcf()))
+    path=SimpleNamespace(folds_=folds,snapshots_=coefs)
+    ns=dict(np=np,pd=pd,plt=plt,df=X,fit_columns=list(X.columns),SCORE_FIRST=15,
+            ridge_selected=SimpleNamespace(path_=path))
+    exec(cell.source,ns)
+    assert ns['beta_plot'].index[0]==X.index[15]
+    assert_allclose(shown[0].axes[0].lines[0].get_ydata(),[1,1,3,3])
+    assert_allclose(coefs,original)
     plt.close('all')

@@ -1,50 +1,29 @@
 # ESc1 take-home
 
-The submission workflow is **`notebooks/takehome.ipynb`**. It runs from data checks and feature research through chronological validation to the final raw-return Ridge forecasts. `notebooks/asset_vol.ipynb` is a separate, smaller signal-only sizing audit. Despite its historical filename, it does not use asset-return volatility and does not generate submission forecasts.
+`notebooks/takehome.ipynb` contains the feature analysis, out-of-sample selection audit, model comparisons, and holdout forecast export. `forecasts/` contains **one file only: `predictions.parquet`**. It has a timezone-aware `msgStamp` index and one `forecast` column with raw `ret_5m` predictions for the true final two-year holdout. No research forecasts, CSVs, coefficients, metadata or charts are exported there. Configuration and diagnostics stay inside the notebook.
 
-## Reproduce
+## Reproduction
 
-Use Python 3.11+ and install `requirements.txt`. Place `ESc1_signal_components_5min (6).parquet` in the repository root, or set `DATA_PATH` to its location. The source dataset is stored with Git LFS in the repository; a source archive without LFS materialization is not the data file.
+Install `requirements.txt` and run `python run_eda.py` from the repository root. The runner uses a fresh kernel, executes the entire notebook and saves outputs only on success. Place the supplied Parquet dataset at the default path displayed in the notebook, or set `DATA_PATH`. `FORECAST_OUTPUT_DIR` optionally changes the output directory; it must contain no files other than the single prediction file. `pytest -q` runs the tests.
 
-```bash
-python -m pip install -r requirements.txt
-python run_eda.py
-```
+## Combined design and model selection
 
-The runner starts a fresh Jupyter kernel, clears every old output, executes the complete main notebook, and atomically saves it only after all cells succeed. It prints progress by cell and records full-execution provenance. All rows and all feature pairs are used, so the complete research notebook is substantially more expensive than a single model fit. Arrow row batches and eight-column feature batches limit temporary memory; no observations or pairs are sampled.
+The return model uses `[X, dszl(X, 10)]`: all 100 raw predictors, including x100=cashflow/volume, followed by all 100 same-clock-time standardized versions. Column labels are `raw:x1` through `raw:x100`, then `dszl:x1` through `dszl:x100`. The transform uses no target or future feature, carries state across folds, does not demean, and preserves the zero/nonfinite-as-missing EWM convention. Nonfinite model inputs are zero-imputed after concatenation; labels are never filled. Candidate loss and regularization scales use only their training windows.
 
-Run the diagnostic separately:
+Ridge and Lasso have separate regularization grids and **previous-test-block selection**, not a static reference alpha. Candidates train on two calendar years, predict the next two years with frozen coefficients, and are scored by raw-return mean squared error. The winner from test block k is refitted and applied only to block k+1. Initial test block zero is tuning only: there are no selected-strategy forecasts there. One row is embargoed at training cutoffs and at the end of validation blocks to avoid immature labels. Exact MSE ties prefer the stronger penalty through descending grid order. Missing/invalid preceding validation raises instead of falling back to a fixed parameter.
 
-```bash
-NOTEBOOK_PATH=notebooks/asset_vol.ipynb python run_eda.py
-```
+The frozen streaming-Lasso audit and its live-update comparator share the selected batch-Lasso penalty schedule. Their training intervals match the batch fits. The live comparator learns each test label only after its prediction; it does not independently choose a hindsight winner. Online AR(2) feature-forecast experiments also select their per-feature penalties using preceding two-year next-feature test MSE; they never use return labels. Pure unpenalized residual transformations and synthetic numerical-reference checks are not hyperparameter-selected return strategies.
 
-Opening either notebook in Jupyter and choosing **Restart Kernel and Run All** also runs its displayed code. `FORECAST_OUTPUT_DIR` can change the main notebook's export directory. There is no separate forecast runner or model-specific export function.
+## Research and final holdout
 
-## Configuration and inference contract
+The initial 80% of labeled elapsed time remains the research sample. The following labeled interval is excluded from those charts but now explicitly used for final pre-holdout tuning; it is not called an untouched test after doing so. Earlier versions inspected broader samples, so research reservations are not retrospectively pristine.
 
-The main notebook declares and displays one fixed configuration: all 100 predictors, including x100=cashflow/volume; time-of-day `dszl(10)` features without demeaning; Ridge alpha=0.01 with an unpenalized intercept; unit weights on finite labels; a 6,048-row EWM fitting half-life; and rolling two-calendar-year training followed by two-calendar-year frozen forecasts, advanced by two years. Missing transformed model inputs are zero-imputed, not targets. The initial EWM and dszl state uses zero/nonfinite-as-missing, `ignore_na=True`; regression decay advances by input row.
+At holdout boundary B, train Ridge candidates on `[B-4 years, B-2 years)`, validate on `[B-2 years, B)`, select by validation MSE, and refit the chosen alpha on `[B-2 years, B)`. Apply the same one-row embargo. Freeze coefficients throughout the entire blackout, including the last supplied timestamp. The combined-feature state is carried from the original feature-history start for identical research and inference semantics. Every true-holdout target must be missing, and every supplied holdout row must receive a finite prediction. Only that holdout prediction frame is written to Parquet.
 
-Ridge/Lasso sensitivity sweeps share exactly the same transformed design and calendar windows. Frozen streaming Lasso replays only each corresponding two-year training window; live streaming Lasso is an explicitly separate continuous online baseline. The h=1 oracle and AR(2) feature-forecast experiments are grouped under Transform experiments, before joint model fitting. The coefficient plot omits its first `HL` rows only for display.
+## Forecasts versus positions
 
-All active main backtest plots use the same explicit **lagged signal standard deviation / 25%-of-first-scale floor / absolute exposure cap of 3**. This policy receives signals only; returns enter afterward for scoring. The normalizer is not reset at folds. It bounds exposure, not asset returns or dollar losses; no P&L is clipped. The normalization audit reconstructs legacy raw-unit and past-anchored Original shape controls and reports jump concentration. The Original shape multiplier changes units, not concentration. Raw forecasts remain unscaled for calibration and export. No return-volatility model or t-stat sizing has been implemented.
+Raw forecasts are never scaled for export. Diagnostic backtests separately use lagged signal standard deviation, a floor at 25% of its first valid scale and an absolute exposure cap of 3, with no fold reset. This requires no asset-return volatility at inference. No P&L is clipped. The cap controls denominator-driven exposure explosions, not market-return shocks or dollar risk, and does not establish forecasting accuracy. MSE selection is on raw forecasts, not these capped P&L curves.
 
-## Validation and submission
+Red notebook TODOs retain the requested uncertainty-aware t-stat sizing and volume-weighted fitting ideas. Neither is claimed implemented. Fitting and validation weights remain unit on finite target rows. Transaction costs and exact decision-time feature/forward-label availability remain methodological limitations.
 
-The first 80% of the labeled elapsed-time span is the research sample; its last 20% is not scored or used to choose settings in this notebook. Earlier versions inspected a broader sample, so that reservation is not retrospectively pristine. Walk-forward validation and the selected configuration's backtest are displayed inside research only.
-
-At the end, the notebook reuses **the same `RIDGE_CONFIG`** to fit on the two calendar years before the final two-year label blackout. This final fit includes available labels from the research-reserved interval, without scoring them or choosing a new penalty. Its coefficients stay frozen for the full blackout. The same-clock-time dszl state is carried from the original feature-history start through the final fit and inference; it uses no return labels. Every blackout target is checked to be missing, and every supplied blackout row must receive a finite prediction.
-
-`forecasts/` contains:
-
-- `ridge_oos.csv` / `.parquet`: submission predictions in raw `ret_5m` units.
-- `ridge_walk_forward.csv` / `.parquet`: the exact research forecasts supporting the selected-model backtest.
-- `ridge_metadata.json`, `ridge_research_windows.csv`, `ridge_coefficients.csv`: configuration, split/use policy, coverage, checksums, window boundaries and final parameters.
-
-CSV columns are `msgStamp,forecast`; Parquet preserves the timezone-aware index. Neither export contains positions, future-return volatility, oracle inputs or an extra forecast shift. Old Lasso exports and the superseded normalization/comparison notebooks have been removed to avoid submitting an obsolete model.
-
-## Open methodological items
-
-Red TODOs remain visible in the notebook as requested: investigate a valid uncertainty-aware forecast t-stat rather than temporal forecast-volatility sizing, and assess volume-weighted fitting as a proxy for feasible trade size. Neither is claimed implemented. Backtests are gross diagnostics; transaction costs, decision-time feature availability and the supplied forward-return timing still need validation. A bounded exposure policy does not establish alpha, executable profitability or a constant realized risk target.
-
-Run `pytest -q` for calendar-window, numerical fitter, prefix-causality, normalization, notebook alignment and actual inline-export tests. `run_eda.py` separately verifies every executed cell and embeds its run provenance.
+Sparse AR feature experiments leave a block unavailable when the previous test block contains no mature feature-target examples. They never substitute a static alpha or tune on the current block. The notebook reports pending choices and aligns the persistence/oracle control masks. This does not remove any raw or dszl column from the 200-input return models, whose regularization selection remains strict.

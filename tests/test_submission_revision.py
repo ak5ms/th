@@ -100,7 +100,7 @@ def tagged(tag,name='takehome.ipynb'):
 def test_submission_notebook_structure_and_visible_todos():
     assert not (ROOT/'notebooks/02_normalization.ipynb').exists()
     assert not (ROOT/'notebooks/takehome_asset_vol.ipynb').exists()
-    assert (ROOT/'notebooks/asset_vol.ipynb').exists()
+    assert not (ROOT/'notebooks/asset_vol.ipynb').exists()
     assert not (ROOT/'run_forecast.py').exists()
     assert not (ROOT/'src/takehome/forecast.py').exists()
     nb=cells();md='\n'.join(c.source for c in nb if c.cell_type=='markdown')
@@ -111,7 +111,7 @@ def test_submission_notebook_structure_and_visible_todos():
     model=next(i for i,c in enumerate(nb) if 'regression_setup' in c.metadata.get('tags',[]))
     ar=next(i for i,c in enumerate(nb) if 'alpha_forecast_controls' in c.metadata.get('tags',[]))
     assert oracle < ar < model
-    assert 'dszl_design' in tagged('regression_setup')
+    assert 'raw_dszl_design' in tagged('regression_setup')
     assert 'RIDGE_CONFIG' in tagged('batch_oos_sweep')
     assert 'RIDGE_CONFIG' in tagged('submission_ridge_fit')
     assert 'write_lasso_forecasts' not in '\n'.join(c.source for c in nb)
@@ -119,54 +119,56 @@ def test_submission_notebook_structure_and_visible_todos():
 
 
 def export_namespace(tmp_path, *, missing_blackout=True):
-    from takehome.fitters import BatchRidge, calendar_walk_forward_folds, walk_forward_sweep
+    from takehome.fitters import BatchRidge
+    from takehome.selection import walk_forward_select
     ix=pd.date_range('2014-01-01','2025-06-01',freq='17h',tz='America/New_York',name='msgStamp')
     rng=np.random.default_rng(72)
     raw=pd.DataFrame(dict(x1=rng.normal(size=len(ix)),x99=rng.normal(size=len(ix)),
         cashflow=rng.normal(size=len(ix)),volume=rng.uniform(.5,2,len(ix))),index=ix)
-    transformed=features.dszl_design(features.with_cashflow_feature(raw)[['x1','x99','x100']],hl=3)
-    raw['ret_5m']=transformed.to_numpy()@np.array([.03,-.02,.015])+.002+rng.normal(0,.001,len(ix))
+    base=['x1','x99','x100']
+    transformed=features.raw_dszl_design(features.with_cashflow_feature(raw)[base],hl=3)
+    raw['ret_5m']=transformed.to_numpy()@np.array([.03,-.02,.015,.007,-.005,.003])+.002+rng.normal(0,.01,len(ix))
     boundary=ix[-1]-pd.DateOffset(years=2)
     if missing_blackout: raw.loc[raw.index>=boundary,'ret_5m']=np.nan
     raw.iloc[17,raw.columns.get_loc('ret_5m')]=np.nan
     source=tmp_path/'data.parquet';raw.to_parquet(source)
     _,split=data.training_data(raw[['ret_5m']])
-    config=dict(alpha=.07,decay=.97,fit_intercept=True)
-    research=raw.loc[(raw.index>=split['first_label'])&(raw.index<split['cutoff'])]
-    folds=calendar_walk_forward_folds(research.index,train_years=2,test_years=2)
-    validation=walk_forward_sweep({'ridge':BatchRidge(3,**config)},transformed.loc[research.index].to_numpy(),
-        research.ret_5m.to_numpy(),W=np.isfinite(research.ret_5m).astype(float).to_numpy(),folds=folds)['ridge']
-    pred=pd.Series(validation.prediction_,index=research.index,name='forecast').dropna().to_frame()
-    ns=dict(Path=Path,pd=pd,np=np,json=json,os=__import__('os'),ROOT=tmp_path,DATA_PATH=source,
-        read_parquet_window=data.read_parquet_window, dszl_design=features.dszl_design,
-        BatchRidge=BatchRidge,WINDOW_YEARS=2,DSZL_HL=3,BATCH_SIZE=2,HL=5,SIGNAL_RULE=RULE,
-        fit_columns=['x1','x99','x100'],file_last=ix[-1],split=split,RIDGE_CONFIG=config,
-        display=lambda *a:None,research_forecast=pred,folds=folds,selected_stats={'n':len(pred)})
+    ns=dict(Path=Path,pd=pd,np=np,os=__import__('os'),ROOT=tmp_path,DATA_PATH=source,
+        read_parquet_window=data.read_parquet_window,raw_dszl_design=features.raw_dszl_design,
+        BatchRidge=BatchRidge,walk_forward_select=walk_forward_select,
+        WINDOW_YEARS=2,DSZL_HL=3,BATCH_SIZE=2,HL=5,SIGNAL_RULE=RULE,
+        base_columns=base,fit_columns=list(transformed.columns),file_last=ix[-1],split=split,
+        RIDGE_CONFIG=dict(decay=.97,fit_intercept=True),RIDGE_ALPHAS=[10.,.1,.001],
+        SELECTION_EMBARGO=1,display=lambda *a:None)
     return ns,raw,transformed
 
 
-def test_actual_notebook_export_matches_manual_dszl_ridge_and_round_trips(tmp_path,monkeypatch):
+def test_actual_notebook_exports_only_holdout_with_previous_validation_winner(tmp_path,monkeypatch):
     monkeypatch.delenv('FORECAST_OUTPUT_DIR',raising=False)
     ns,raw,X=export_namespace(tmp_path)
     for tag in ['submission_design','submission_ridge_fit','submission_export']:
         exec(tagged(tag),ns)
-    ix=raw.index; boundary=ns['final_boundary']; lo=ns['final_train_start']
-    mask=(ix>=lo)&(ix<boundary);out=ix>=boundary
-    y=raw.loc[mask,'ret_5m'].to_numpy()
-    ref=ns['BatchRidge'](3,**ns['RIDGE_CONFIG']).fit(X.loc[mask].to_numpy(),y,W=np.isfinite(y).astype(float))
-    expected=pd.DataFrame({'forecast':ref.predict(X.loc[out].to_numpy())},index=ix[out])
+    boundary=ns['final_boundary'];refit=ns['final_train_start'];lo=ns['final_validation_train_start']
+    train=np.flatnonzero((raw.index>=lo)&(raw.index<refit))[:-1]
+    valid=np.flatnonzero((raw.index>=refit)&(raw.index<boundary))[:-1]
+    records=[]
+    for alpha in ns['RIDGE_ALPHAS']:
+        m=ns['BatchRidge'](6,alpha=alpha,**ns['RIDGE_CONFIG']).fit(X.iloc[train].to_numpy(),raw.ret_5m.iloc[train].to_numpy())
+        mse=np.mean((m.predict(X.iloc[valid].to_numpy())-raw.ret_5m.iloc[valid])**2)
+        records.append((mse,alpha))
+    best=min(records,key=lambda r:r[0])[1]
+    assert ns['submission_alpha']==best
+    model=ns['BatchRidge'](6,alpha=best,**ns['RIDGE_CONFIG']).fit(X.iloc[valid].to_numpy(),raw.ret_5m.iloc[valid].to_numpy())
+    out=raw.index>=boundary
+    expected=pd.DataFrame({'forecast':model.predict(X.loc[out].to_numpy())},index=raw.index[out])
     assert_frame_equal(ns['submission_forecast'],expected,atol=1e-12,check_freq=False)
     assert_allclose(ns['final_design'],X.loc[ns['final_index']],atol=0,rtol=0)
-    folder=tmp_path/'forecasts'
-    parquet=folder/'ridge_oos.parquet'; assert parquet.read_bytes()[:4]==b'PAR1'
+    folder=tmp_path/'forecasts';parquet=folder/'predictions.parquet'
+    assert {p.name for p in folder.iterdir()}=={'predictions.parquet'}
+    assert parquet.read_bytes()[:4]==b'PAR1'
     assert_frame_equal(pd.read_parquet(parquet),expected,check_freq=False)
-    csv=pd.read_csv(folder/'ridge_oos.csv');assert list(csv)==['msgStamp','forecast']
-    assert_allclose(csv.forecast,expected.forecast,atol=1e-14)
-    m=json.loads((folder/'ridge_metadata.json').read_text())
-    assert m['model']=='BatchRidge' and m['model_config']==ns['RIDGE_CONFIG']
-    assert m['feature_transform']=='dszl' and not m['blackout_targets_used'] and not m['heldout_scoring']
-    assert m['oos_rows']==int(out.sum())
-    assert ns['research_forecast'].index.max()<ns['split']['cutoff']
+    assert ns['submission_selection'].choices_[0] is None
+    assert np.isnan(ns['submission_selection'].prediction_[:ns['holdout_start']]).all()
 
 
 def test_actual_export_cell_rejects_observed_blackout_labels(tmp_path):
@@ -175,23 +177,22 @@ def test_actual_export_cell_rejects_observed_blackout_labels(tmp_path):
         exec(tagged('submission_design'),ns)
 
 
-def test_main_and_diagnostic_use_identical_fixed_configuration():
+def test_main_configuration_has_a_grid_not_a_static_regularization_value():
     import ast
-    results=[]
-    for source in [tagged('submission_config'),tagged('diagnostic_setup','asset_vol.ipynb')]:
-        statements=[]
-        for stmt in ast.parse(source).body:
-            if not isinstance(stmt,ast.Assign):continue
-            names={n.id for target in stmt.targets for n in ast.walk(target) if isinstance(n,ast.Name)}
-            if names & {'HL','SIGNAL_RULE','RIDGE_CONFIG'}:statements.append(stmt)
-        ns={};exec(compile(ast.Module(body=statements,type_ignores=[]),'<config>','exec'),ns)
-        results.append({k:ns[k] for k in ['HL','DSZL_HL','WINDOW_YEARS','SIGNAL_RULE','RIDGE_CONFIG']})
-    assert results[0]==results[1]
-    assert results[0]['WINDOW_YEARS']==2 and results[0]['DSZL_HL']==10
+    statements=[]
+    for stmt in ast.parse(tagged('submission_config')).body:
+        if not isinstance(stmt,ast.Assign):continue
+        names={n.id for target in stmt.targets for n in ast.walk(target) if isinstance(n,ast.Name)}
+        if names & {'HL','SIGNAL_RULE','RIDGE_CONFIG','RIDGE_ALPHAS','LASSO_ALPHAS','SELECTION_EMBARGO'}:statements.append(stmt)
+    ns={'np':np};exec(compile(ast.Module(body=statements,type_ignores=[]),'<config>','exec'),ns)
+    assert ns['WINDOW_YEARS']==2 and ns['DSZL_HL']==10
+    assert 'alpha' not in ns['RIDGE_CONFIG']
+    assert len(ns['RIDGE_ALPHAS'])>1 and len(ns['LASSO_ALPHAS'])>1
+    assert ns['SELECTION_EMBARGO']==1
 
 
 def test_new_markdown_has_no_accidental_latex_control_characters():
-    for name in ['takehome.ipynb','asset_vol.ipynb']:
+    for name in ['takehome.ipynb']:
         for cell in cells(name):
             if cell.cell_type=='markdown':
                 assert not (set(cell.source) & {chr(i) for i in range(32) if i not in (9,10)}),name
