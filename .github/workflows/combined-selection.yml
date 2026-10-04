@@ -19,14 +19,6 @@ jobs:
       MKL_NUM_THREADS: '1'
       PYTHONUNBUFFERED: '1'
     steps:
-      - name: Cancel only the superseded execution from this revision
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          status=$(gh api repos/${GITHUB_REPOSITORY}/actions/runs/37165590658 --jq .status)
-          if [ "$status" != completed ]; then
-            gh api --method POST repos/${GITHUB_REPOSITORY}/actions/runs/37165590658/cancel
-          fi
       - uses: actions/checkout@v4
         with:
           ref: agent/eda-notebook
@@ -69,8 +61,8 @@ jobs:
           nb=nbformat.v4.new_notebook(cells=cells,metadata=prior.metadata)
           nbformat.validate(nb);nbformat.write(nb,p)
           for name in m['delete']:Path(name).unlink(missing_ok=True)
-          Path('.maintenance/run_revision.py').write_text(m['runner'])
-          # Same terminal fit; correctly age embargoed rows before live updates.
+          runner=m['runner'].replace('all 200 combined-design Ridge/Lasso candidates','the Ridge/Lasso grids on all 200 combined-design columns')
+          Path('.maintenance/run_revision.py').write_text(runner)
           p=Path('src/takehome/selection.py');s=p.read_text()
           old='        live[c:d] = model.fit_predict(X[c:d], y[c:d], W=w[c:d])'
           new='''        if b < c:
@@ -99,6 +91,7 @@ jobs:
           ''')
           PY
           python .maintenance/fix_selection_controls.py
+          python .maintenance/wait_for_sparse_features.py
       - name: Verify full test suite
         run: |
           set -o pipefail
@@ -107,7 +100,7 @@ jobs:
       - name: Run every changed model section and the final holdout export
         run: |
           set -o pipefail
-          python -u .maintenance/run_revision.py | tee /tmp/selection-execution.log
+          python -u .maintenance/run_revision.py 2>&1 | tee /tmp/selection-execution.log
       - name: Verify executed results and the single prediction file
         run: |
           python - <<'PY'
@@ -143,7 +136,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm .github/workflows/combined-selection.yml .maintenance/selection-0.b64 .maintenance/selection-1.b64 .maintenance/selection-2.b64 .maintenance/fix_selection_controls.py
+          git rm .github/workflows/combined-selection.yml .maintenance/selection-0.b64 .maintenance/selection-1.b64 .maintenance/selection-2.b64 .maintenance/fix_selection_controls.py .maintenance/wait_for_sparse_features.py
           rm .maintenance/run_revision.py
           git add -A README.md run_eda.py src/takehome/features.py src/takehome/selection.py tests notebooks forecasts
           git diff --cached --check
