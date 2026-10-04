@@ -1,0 +1,5 @@
+# Generated Python and notebook caches; keep executed notebooks and forecasts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
