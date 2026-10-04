@@ -1,0 +1,122 @@
+name: Nonnegative Ridge submission
+on:
+  push:
+    branches: [agent/eda-notebook]
+    paths: [.github/workflows/nonnegative-ridge-choice.yml]
+permissions:
+  contents: write
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONUNBUFFERED: '1'
+      NONNEG_EVIDENCE_DIR: /tmp/nonneg-ridge-evidence
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/eda-notebook
+          lfs: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements.txt
+      - name: Check the source base and apply the tested model-family change
+        run: |
+          python - <<'PY'
+          import subprocess
+          expected = {
+              'notebooks/takehome.ipynb': '901d0125cc2e3b3c837014322150d9d150a54855',
+              'README.md': 'df4f537c1820e503ff1bb7b5caca7450cfb2aa29',
+              'tests/test_submission_revision.py': '9d4ad48dc8d8794651af14f40455f8c3d4e0f693',
+          }
+          for path, sha in expected.items():
+              actual = subprocess.check_output(['git','hash-object',path], text=True).strip()
+              assert actual == sha, (path, 'source changed; reconcile before editing', actual, sha)
+          PY
+          python .maintenance/apply_nonnegative_choice.py
+      - name: Full tests before model execution
+        run: |
+          set -o pipefail
+          MPLBACKEND=Agg pytest -q | tee /tmp/nonneg-tests-before.log
+          git diff --check
+      - name: Regenerate selected-model plots and the single holdout Parquet
+        run: |
+          set -o pipefail
+          python -u .maintenance/rerun_selected_model.py | tee /tmp/nonneg-execution.log
+      - name: Verify notebook, constraints, forecast integrity and full tests
+        run: |
+          python - <<'PY'
+          import ast, hashlib, json
+          from pathlib import Path
+          import nbformat, numpy as np, pandas as pd
+          report = json.loads(Path('/tmp/nonneg-ridge-evidence/verification.json').read_text())
+          assert report['family'] == 'Ridge nonneg'
+          assert report['min_selected_coefficient'] >= 0 and report['max_abs_intercept'] == 0
+          assert report['research_choices'][0] is None
+          assert report['metrics']['max_abs_weight'] <= 3
+          assert report['holdout_rows'] == 150048
+          assert {p.name for p in Path('forecasts').iterdir()} == {'predictions.parquet'}
+          assert {p.name for p in Path('notebooks').glob('*.ipynb')} == {'takehome.ipynb'}
+          p = Path('forecasts/predictions.parquet')
+          assert hashlib.sha256(p.read_bytes()).hexdigest() == report['sha256']
+          assert p.read_bytes()[:4] == b'PAR1'
+          prediction = pd.read_parquet(p)
+          assert prediction.shape == (150048,1) and list(prediction) == ['forecast']
+          assert prediction.index.name == 'msgStamp' and prediction.index.tz is not None
+          assert prediction.index.is_unique and prediction.index.is_monotonic_increasing
+          assert np.isfinite(prediction.forecast).all()
+          nb = nbformat.read('notebooks/takehome.ipynb',4); nbformat.validate(nb)
+          for c in nb.cells:
+              if c.cell_type == 'code':
+                  ast.parse(c.source)
+                  assert c.execution_count is not None
+                  assert not any(o.output_type == 'error' for o in c.outputs)
+          for tag in ('coefficient_paths','regression_calibration_plot','selected_ridge_backtest','oos_model_consistency'):
+              c = next(c for c in nb.cells if tag in c.metadata.get('tags',[]))
+              assert any('image/png' in o.get('data',{}) for o in c.outputs), tag
+          print('VERIFIED_NONNEGATIVE_SUBMISSION', json.dumps(report,indent=2))
+          PY
+          set -o pipefail
+          MPLBACKEND=Agg pytest -q | tee /tmp/nonneg-tests-after.log
+          git diff --check
+      - name: Publish verified changes and remove temporary execution files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .maintenance/apply_nonnegative_choice.py .maintenance/rerun_selected_model.py .github/workflows/nonnegative-ridge-choice.yml
+          git add README.md notebooks/takehome.ipynb forecasts/predictions.parquet tests/test_submission_revision.py tests/test_nonnegative_submission_choice.py
+          git diff --cached --check
+          git commit -m 'Choose nonnegative Ridge for submission; refresh selected plots and holdout predictions'
+          git push origin HEAD:agent/eda-notebook
+          git rev-parse HEAD > /tmp/nonneg-commit.txt
+      - name: Package evaluated notebook and actual prediction bytes
+        run: |
+          mkdir -p /tmp/nonneg-delivery/forecasts /tmp/nonneg-delivery/notebooks
+          cp forecasts/predictions.parquet /tmp/nonneg-delivery/forecasts/
+          cp notebooks/takehome.ipynb /tmp/nonneg-delivery/notebooks/
+          cp /tmp/nonneg-ridge-evidence/verification.json /tmp/nonneg-tests-after.log /tmp/nonneg-commit.txt /tmp/nonneg-delivery/
+          tar -czf /tmp/nonneg-delivery.tar.gz -C /tmp/nonneg-delivery .
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: nonnegative-ridge-submission
+          path: |
+            /tmp/nonneg-delivery.tar.gz
+            /tmp/nonneg-ridge-evidence/verification.json
+            /tmp/nonneg-ridge-evidence/cell-output.txt
+            /tmp/nonneg-tests-after.log
+            /tmp/nonneg-execution.log
+            /tmp/nonneg-commit.txt
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: nonnegative-ridge-failure
+          path: |
+            /tmp/nonneg-*.log
+            /tmp/nonneg-ridge-evidence/
+          retention-days: 1
