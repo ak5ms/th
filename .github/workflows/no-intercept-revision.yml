@@ -1,0 +1,20 @@
+name: Variance scaled zero intercept revision
+on:
+  push:
+    branches: [agent/eda-notebook]
+    paths: [.github/workflows/no-intercept-revision.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package current source without data or forecasts
+        run: git archive HEAD notebooks src tests README.md run_eda.py requirements.txt pytest.ini splits.json Takehome.txt .gitignore .gitattributes | gzip > /tmp/current-source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zero-intercept-source
+          path: /tmp/current-source.tar.gz
+          retention-days: 1
