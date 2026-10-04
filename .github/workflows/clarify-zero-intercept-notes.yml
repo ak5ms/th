@@ -1,0 +1,72 @@
+name: Clarify zero intercept notebook notes
+on:
+  push:
+    branches: [agent/eda-notebook]
+    paths: [.github/workflows/clarify-zero-intercept-notes.yml]
+permissions:
+  contents: write
+jobs:
+  clarify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements.txt
+      - name: Clarify prose without changing any code or executed output
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from copy import deepcopy
+          import nbformat
+          path=Path('notebooks/takehome.ipynb')
+          nb=nbformat.read(path,4)
+          before=[deepcopy(c) for c in nb.cells if c.cell_type=='code']
+          old='Concatenate the **100 raw and 100 dszl(10) predictors** in that order. Each candidate learns centering and feature-penalty scales only inside its preceding two-year training interval. The time-of-day feature state is causal and continues across boundaries. Nonfinite model inputs are zero-imputed after construction; labels are never filled.'
+          new='Concatenate the **100 raw and 100 dszl(10) predictors** in that order, then divide all 200 columns by their causal EWM variance before model fitting. Every candidate has **zero intercept** and uses the uncentered regression loss; there is no feature or target demeaning. Feature-penalty scales are estimated only inside the preceding two-year training interval. Both the time-of-day and outer EWM-variance states continue across boundaries from the original feature-history start. Nonfinite model inputs are zero-imputed only after variance division; labels are never filled.'
+          found=0
+          for c in nb.cells:
+              if c.cell_type=='markdown' and old in c.source:
+                  c.source=c.source.replace(old,new);found+=1
+          assert found==1,found
+          cell=next(c for c in nb.cells if c.cell_type=='markdown' and 'Removing the intercept removes a separate constant term' in c.source)
+          cell.source+='\n\nAn exact-zero Lasso forecast is an inactive signal, not a short forecast. Its all-zero blocks may have no available exposure scale under the existing nonzero-observation warm-up convention; those gaps are reported through `position_observations` and can be absent from the exposure plot. The raw forecast sign/mean/std statistics still include these zero forecasts. Average exposure and cap frequency use available positions, and should not be interpreted as averages over all forecast rows for such sparse models.\n'
+          assert before==[c for c in nb.cells if c.cell_type=='code']
+          assert len(before)==43 and [c.execution_count for c in before]==list(range(1,44))
+          assert not any(o.output_type=='error' for c in before for o in c.outputs)
+          nbformat.validate(nb);nbformat.write(nb,path)
+          print('Only two Markdown cells changed; every code cell, output and execution record is unchanged.')
+          PY
+          git diff --exit-code -- src tests forecasts
+          git diff --check
+      - name: Full tests after prose corrections
+        run: |
+          set -o pipefail
+          pytest -q | tee /tmp/zero-intercept-final-tests.log
+      - name: Publish documentation correction and remove temporary workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/clarify-zero-intercept-notes.yml
+          git add notebooks/takehome.ipynb
+          git diff --cached --check
+          git commit -m 'Clarify uncentered zero-intercept fitting and exact-zero Lasso exposure gaps'
+          git push origin HEAD:agent/eda-notebook
+          git rev-parse HEAD > /tmp/zero-intercept-final-commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zero-intercept-final-notebook
+          path: |
+            notebooks/takehome.ipynb
+            /tmp/zero-intercept-final-tests.log
+            /tmp/zero-intercept-final-commit.txt
+          retention-days: 1
