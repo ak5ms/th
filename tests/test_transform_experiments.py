@@ -70,9 +70,9 @@ def test_residuals_equal_direct_weighted_prefix_regressions():
         prior = np.flatnonzero(valid.iloc[:t].to_numpy())
         if valid.iloc[t] and len(prior) >= 2:
             a = 2 ** (-(t - 1 - prior) / hl)
-            design = np.column_stack([np.ones(len(prior)), x.iloc[prior]])
+            design = x.iloc[prior].to_numpy()[:, None]
             beta = np.linalg.lstsq(design * np.sqrt(a[:, None]), y.iloc[prior] * np.sqrt(a), rcond=None)[0]
-            expected[t] = y.iloc[t] - (beta[0] + beta[1] * x.iloc[t])
+            expected[t] = y.iloc[t] - beta[0] * x.iloc[t]
     assert_allclose(actual, expected, atol=1e-10, rtol=1e-10, equal_nan=True)
 
 

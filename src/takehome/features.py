@@ -92,7 +92,7 @@ def dszl_design(X: pd.DataFrame, hl: int = 10, batch_size: int = 8) -> pd.DataFr
 
 
 def pair_residual(y: pd.Series, x: pd.Series, hl: int = 288 * 21):
-    """y_t - (b_{t-1} + beta_{t-1} x_t), using alpha=0 and unit joint-row weights."""
+    """y_t - beta_{t-1} x_t, with zero intercept and unit joint-row weights."""
     from .fitters import StreamingWeightedLasso
 
     _time_index(y)
@@ -100,7 +100,7 @@ def pair_residual(y: pd.Series, x: pd.Series, hl: int = 288 * 21):
         raise ValueError('Require aligned indexes and a positive finite half-life.')
     valid = np.isfinite(x) & np.isfinite(y)
     model = StreamingWeightedLasso(1, decay=2**(-1/hl), alpha=0,
-                                  fit_intercept=True, store_history=True)
+                                  fit_intercept=False, store_history=True)
     model.fit(x.to_numpy()[:, None], y.to_numpy(), W=valid.to_numpy(dtype=float))
     beta = pd.Series(model.get_coefs()[:, 0], index=y.index).shift()
     intercept = pd.Series(model.get_intercepts(), index=y.index).shift()
@@ -254,4 +254,46 @@ def raw_dszl_design(X: pd.DataFrame, hl: int = 10, batch_size: int = 8) -> pd.Da
         block = dszl(X.iloc[:, start:stop], hl=hl).to_numpy(dtype=float, copy=True)
         np.nan_to_num(block, copy=False, nan=0., posinf=0., neginf=0.)
         matrix[:, p+start:p+stop] = block
+    return pd.DataFrame(matrix, index=X.index, columns=columns, copy=False)
+
+
+
+def variance_scaled_design(X: pd.DataFrame, hl: int = 10, *,
+                           variance_hl: int = 6048, batch_size: int = 8) -> pd.DataFrame:
+    """Build F=[X, dszl(X, hl)], divide each column by its EWM variance.
+
+    This is F / EWMVar(F), not F / EWMStd(F) and not a demeaned z-score.
+    Both transforms see only the feature prefix through the current row. The
+    current feature is assumed observable before predicting the forward return.
+    EWM variance uses the existing adjust=True, ignore_na=True, unbiased sample
+    convention; zero/nonfinite observations do not update it. Require
+    variance_hl observations. Zero/undefined variances produce unavailable
+    transformed inputs, which are zero-imputed only AFTER division. There is no
+    variance floor, input clipping, return scaling, or reset at fold boundaries.
+
+    Supply the same original feature-history prefix for research and holdout
+    inference. Column batches bound memory without changing the time-series
+    state. The owned output is C-contiguous float64 in [raw, dszl] column order.
+    """
+    _time_index(X)
+    if (not isinstance(X, pd.DataFrame) or not X.columns.is_unique or not len(X.columns)
+            or isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1
+            or isinstance(hl, bool) or not isinstance(hl, int) or hl < 2
+            or isinstance(variance_hl, bool) or not isinstance(variance_hl, int) or variance_hl < 2):
+        raise ValueError('Require unique columns, integer half-lives >= 2 and positive batch_size.')
+    p = len(X.columns)
+    columns = [f'raw:{c}' for c in X.columns] + [f'dszl:{c}' for c in X.columns]
+    if len(set(columns)) != len(columns):
+        raise ValueError('String representations of feature names must be unique.')
+    matrix = np.empty((len(X), 2*p), dtype=np.float64, order='C')
+    for start in range(0, p, batch_size):
+        stop = min(start + batch_size, p)
+        raw = X.iloc[:, start:stop]
+        for offset, block in ((0, raw), (p, dszl(raw, hl=hl))):
+            variance = ewm_observed(block, variance_hl, min_periods=variance_hl).var()
+            variance = variance.where(variance > 0)
+            with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+                values = block.div(variance).to_numpy(dtype=float, copy=True)
+            np.nan_to_num(values, copy=False, nan=0., posinf=0., neginf=0.)
+            matrix[:, offset+start:offset+stop] = values
     return pd.DataFrame(matrix, index=X.index, columns=columns, copy=False)

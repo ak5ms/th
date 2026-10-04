@@ -111,7 +111,7 @@ def test_submission_notebook_structure_and_visible_todos():
     model=next(i for i,c in enumerate(nb) if 'regression_setup' in c.metadata.get('tags',[]))
     ar=next(i for i,c in enumerate(nb) if 'alpha_forecast_controls' in c.metadata.get('tags',[]))
     assert oracle < ar < model
-    assert 'raw_dszl_design' in tagged('regression_setup')
+    assert 'variance_scaled_design' in tagged('regression_setup')
     assert 'RIDGE_CONFIG' in tagged('batch_oos_sweep')
     assert 'RIDGE_CONFIG' in tagged('submission_ridge_fit')
     assert 'write_lasso_forecasts' not in '\n'.join(c.source for c in nb)
@@ -126,7 +126,7 @@ def export_namespace(tmp_path, *, missing_blackout=True):
     raw=pd.DataFrame(dict(x1=rng.normal(size=len(ix)),x99=rng.normal(size=len(ix)),
         cashflow=rng.normal(size=len(ix)),volume=rng.uniform(.5,2,len(ix))),index=ix)
     base=['x1','x99','x100']
-    transformed=features.raw_dszl_design(features.with_cashflow_feature(raw)[base],hl=3)
+    transformed=features.variance_scaled_design(features.with_cashflow_feature(raw)[base],hl=3,variance_hl=5)
     raw['ret_5m']=transformed.to_numpy()@np.array([.03,-.02,.015,.007,-.005,.003])+.002+rng.normal(0,.01,len(ix))
     boundary=ix[-1]-pd.DateOffset(years=2)
     if missing_blackout: raw.loc[raw.index>=boundary,'ret_5m']=np.nan
@@ -134,11 +134,11 @@ def export_namespace(tmp_path, *, missing_blackout=True):
     source=tmp_path/'data.parquet';raw.to_parquet(source)
     _,split=data.training_data(raw[['ret_5m']])
     ns=dict(Path=Path,pd=pd,np=np,os=__import__('os'),ROOT=tmp_path,DATA_PATH=source,
-        read_parquet_window=data.read_parquet_window,raw_dszl_design=features.raw_dszl_design,
+        read_parquet_window=data.read_parquet_window,variance_scaled_design=features.variance_scaled_design,
         BatchRidge=BatchRidge,walk_forward_select=walk_forward_select,
         WINDOW_YEARS=2,DSZL_HL=3,BATCH_SIZE=2,HL=5,SIGNAL_RULE=RULE,
         base_columns=base,fit_columns=list(transformed.columns),file_last=ix[-1],split=split,
-        RIDGE_CONFIG=dict(decay=.97,fit_intercept=True),RIDGE_ALPHAS=[10.,.1,.001],
+        RIDGE_CONFIG=dict(decay=.97,fit_intercept=False),RIDGE_ALPHAS=[10.,.1,.001],
         SELECTION_EMBARGO=1,display=lambda *a:None)
     return ns,raw,transformed
 

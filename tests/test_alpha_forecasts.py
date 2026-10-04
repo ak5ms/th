@@ -62,7 +62,7 @@ def test_forecast_matches_direct_cvxpy_loss_at_checkpoints():
     weights = (np.isfinite(train).all(axis=1) & np.isfinite(z)).astype(float)
     for t in [12, 23, 49]:
         model = fitters.CvxpyWeightedLasso(2, 2**(-1/10), .03,
-                    fit_intercept=True, tol=1e-12).fit(train[:t+1], z.iloc[:t+1].to_numpy(), W=weights[:t+1])
+                    fit_intercept=False, tol=1e-12).fit(train[:t+1], z.iloc[:t+1].to_numpy(), W=weights[:t+1])
         # At decision t we know x_t and x_{t-1}, never x_{t+1}.
         expected = model.predict(np.array([z.iloc[t], z.iloc[t-1]]))*info['scale']
         assert pred.iloc[t] == pytest.approx(expected, abs=1e-7)

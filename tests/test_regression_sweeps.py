@@ -51,7 +51,7 @@ def test_ridge_matches_direct_normal_equations_and_cvxpy():
     X,y=data(90); w=np.linspace(.1,3,len(y)); w[:3]=0; a=w/w.sum()
     mx=a@X; my=a@y; scale=np.sqrt(a@((X-mx)**2)); Z=(X-mx)/scale
     beta=np.linalg.solve(Z.T@(a[:,None]*Z)+.02*np.eye(6),Z.T@(a*(y-my)))/scale
-    m=BatchRidge(6,alpha=.02).fit(X,y,W=w)
+    m=BatchRidge(6,alpha=.02,fit_intercept=True).fit(X,y,W=w)
     assert_allclose(m.coef,beta,atol=1e-11)
     assert_allclose(m.intercept_,my-mx@beta,atol=1e-11)
     coef=cp.Variable(6); bias=cp.Variable()
@@ -59,7 +59,7 @@ def test_ridge_matches_direct_normal_equations_and_cvxpy():
                                   + .02*cp.sum_squares(cp.multiply(scale,coef))/2))
     problem.solve(solver='CLARABEL',tol_gap_abs=1e-11,tol_feas=1e-11,tol_gap_rel=1e-11)
     assert_allclose(m.coef,coef.value,atol=2e-7)
-    m2=BatchRidge(6,alpha=.02).fit(X*7,y,W=w*1e8)
+    m2=BatchRidge(6,alpha=.02,fit_intercept=True).fit(X*7,y,W=w*1e8)
     assert_allclose(m2.predict(X*7),m.predict(X),atol=1e-11)
 
 
@@ -78,7 +78,7 @@ def test_ridge_constant_missing_and_invalid_weights():
     from takehome.fitters import BatchRidge
     X,y=data(40); X[:,1]=0; X[:,2]=4
     w=np.ones(len(y)); w[:3]=0; X[:3]=np.nan; y[:3]=np.nan
-    fitted=BatchRidge(6).fit(X,y,W=w)
+    fitted=BatchRidge(6,fit_intercept=True).fit(X,y,W=w)
     assert_allclose(fitted.coef[1:3],0,atol=1e-12)
     for a in [0,-1,np.nan]:
         with pytest.raises(ValueError): BatchRidge(6,alpha=a)

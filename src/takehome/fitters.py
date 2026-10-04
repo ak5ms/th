@@ -17,15 +17,18 @@ from numba.typed import List
 
 
 @njit(cache=True)
-def _coordinate_descent(G, h, theta, alpha, max_iter, tol):
+def _coordinate_descent(G, h, theta, alpha, max_iter, tol, nonneg=False):
     """Warm-started cyclic CD; maintain correlations, verify full KKT each sweep."""
     threshold = tol * (1.0 + np.max(np.abs(h)))
     residual = h - G @ theta
     for iteration in range(max_iter):
         for j in range(len(theta)):
             rho = residual[j] + G[j, j] * theta[j]
-            updated = (np.sign(rho) * max(abs(rho) - alpha, 0.0) / G[j, j]
-                       if G[j, j] > 0 else 0.0)
+            if nonneg:
+                updated = max(rho-alpha, 0.0) / G[j, j] if G[j, j] > 0 else 0.0
+            else:
+                updated = (np.sign(rho) * max(abs(rho) - alpha, 0.0) / G[j, j]
+                           if G[j, j] > 0 else 0.0)
             delta = updated - theta[j]
             if delta != 0:
                 theta[j] = updated
@@ -35,8 +38,11 @@ def _coordinate_descent(G, h, theta, alpha, max_iter, tol):
         residual = h - G @ theta
         error = 0.0
         for j in range(len(theta)):
-            v = (abs(residual[j] - alpha * np.sign(theta[j])) if theta[j] != 0
-                 else max(abs(residual[j]) - alpha, 0.0))
+            if nonneg:
+                v = abs(residual[j]-alpha) if theta[j] > 0 else max(residual[j]-alpha, 0.0)
+            else:
+                v = (abs(residual[j] - alpha * np.sign(theta[j])) if theta[j] != 0
+                     else max(abs(residual[j]) - alpha, 0.0))
             error = max(error, v)
         if error <= threshold:
             break
@@ -45,7 +51,7 @@ def _coordinate_descent(G, h, theta, alpha, max_iter, tol):
 
 @njit(cache=True)
 def _stream_scalar_ols(X, y, weights, C, c, mx, my, total, coef, intercept,
-                       decay, tol, fit_intercept, record):
+                       decay, tol, fit_intercept, record, nonneg=False):
     """Exact one-coordinate alpha=0 solve; the same weighted centered statistics."""
     n = len(y)
     history = np.empty((n if record else 0, 1))
@@ -70,11 +76,14 @@ def _stream_scalar_ols(X, y, weights, C, c, mx, my, total, coef, intercept,
             g = xx / total + (0.0 if fit_intercept else mean * mean)
             h = xy / total + (0.0 if fit_intercept else mean * my)
             beta = h / g if g > 0 else 0.0
+            if nonneg:
+                beta = max(beta, 0.0)
             intercept = my - mean * beta if fit_intercept else 0.0
             scale = np.sqrt(max(xx / total, 0.0))
             if scale == 0:
                 scale = abs(mean) if not fit_intercept and mean != 0 else 1.0
-            error, threshold = abs(g * beta - h) / scale, tol * (1 + abs(h / scale))
+            error = (max(h, 0.0) if nonneg and beta == 0 else abs(g * beta - h)) / scale
+            threshold = tol * (1 + abs(h / scale))
             failed += error > threshold
             iterations = 1
         if record:
@@ -85,11 +94,11 @@ def _stream_scalar_ols(X, y, weights, C, c, mx, my, total, coef, intercept,
 
 @njit(cache=True)
 def _stream(X, y, weights, C, c, mx, my, total, coef, intercept,
-            decay, alpha, max_iter, tol, fit_intercept, record):
+            decay, alpha, max_iter, tol, fit_intercept, record, nonneg=False):
     """Weighted Welford updates avoid subtracting two large raw moments."""
     if X.shape[1] == 1 and alpha == 0:
         return _stream_scalar_ols(X, y, weights, C, c, mx, my, total, coef, intercept,
-                                  decay, tol, fit_intercept, record)
+                                  decay, tol, fit_intercept, record, nonneg)
     n, p = X.shape
     history = np.empty((n if record else 0, p))
     intercepts = np.empty(n if record else 0)
@@ -125,7 +134,7 @@ def _stream(X, y, weights, C, c, mx, my, total, coef, intercept,
                 for k in range(p):
                     value = C[j, k] / total + (0.0 if fit_intercept else mx[j] * mx[k])
                     G[j, k] = value / scale[j] / scale[k]
-            iterations, error, threshold = _coordinate_descent(G, h, theta, alpha, max_iter, tol)
+            iterations, error, threshold = _coordinate_descent(G, h, theta, alpha, max_iter, tol, nonneg)
             failed += error > threshold
             coef[:] = theta / scale
             intercept = my - mx @ coef if fit_intercept else 0.0
@@ -139,7 +148,7 @@ _CORE_SPEC = (
     [(k, types.int64) for k in ('n_features', 'max_iter', 'n_seen_', 'n_failed_', 'n_iter_')]
     + [(k, types.float64) for k in ('decay', 'alpha', 'tol', 'Wsum', 'mean_y_', 'intercept_',
                                    'kkt_violation_', 'kkt_tolerance_')]
-    + [(k, types.boolean) for k in ('fit_intercept', 'store_history', 'converged_')]
+    + [(k, types.boolean) for k in ('fit_intercept', 'store_history', 'converged_', 'nonneg')]
     + [('C_', types.float64[:, ::1])]
     + [(k, types.float64[::1]) for k in ('c_', 'mean_x_', 'coef')]
     + [('history', types.ListType(types.float64[:, ::1])),
@@ -154,6 +163,7 @@ class StreamingWeightedLasso_:
         self.n_features, self.decay, self.alpha = n_features, decay, alpha
         self.max_iter, self.tol = max_iter, tol
         self.fit_intercept, self.store_history = fit_intercept, store_history
+        self.nonneg = False
         self.C_ = np.zeros((n_features, n_features))
         self.c_, self.mean_x_, self.coef = np.zeros(n_features), np.zeros(n_features), np.zeros(n_features)
         self.Wsum = self.mean_y_ = self.intercept_ = 0.0
@@ -166,7 +176,7 @@ class StreamingWeightedLasso_:
         """Append rows and emit predictions before their updates."""
         result = _stream(X, y, weights, self.C_, self.c_, self.mean_x_, self.mean_y_,
                          self.Wsum, self.coef, self.intercept_, self.decay, self.alpha,
-                         self.max_iter, self.tol, self.fit_intercept, self.store_history)
+                         self.max_iter, self.tol, self.fit_intercept, self.store_history, self.nonneg)
         self.Wsum, self.mean_y_, self.intercept_ = result[0], result[1], result[2]
         self.n_seen_ += len(y)
         self.n_failed_ += result[5]
@@ -215,7 +225,7 @@ class StreamingWeightedLasso:
     decay without adding an observation. History is optional and post-update.
     """
     def __init__(self, n_features, decay, alpha, max_iter=1000, tol=1e-8,
-                 *, fit_intercept=False, store_history=False):
+                 *, fit_intercept=False, store_history=False, nonneg=False):
         if (not isinstance(n_features, (int, np.integer)) or n_features < 1
                 or not isinstance(max_iter, (int, np.integer)) or max_iter < 1
                 or not np.isfinite([decay, alpha, tol]).all()
@@ -223,6 +233,7 @@ class StreamingWeightedLasso:
             raise ValueError('Require p>=1, max_iter>=1, 0<decay<=1, alpha>=0 and tol>0.')
         self._core = StreamingWeightedLasso_(int(n_features), float(decay), float(alpha),
                          int(max_iter), float(tol), bool(fit_intercept), bool(store_history))
+        self._core.nonneg = bool(nonneg)
 
     def __getattr__(self, name):
         return getattr(object.__getattribute__(self, '_core'), name)
@@ -282,7 +293,8 @@ class StreamingWeightedLasso:
 
     def __setstate__(self, state):
         self.__init__(*(state[k] for k in ('n_features','decay','alpha','max_iter','tol')),
-                      fit_intercept=state['fit_intercept'], store_history=state['store_history'])
+                      fit_intercept=state['fit_intercept'], store_history=state['store_history'],
+                      nonneg=state.get('nonneg', False))
         for name, value in state.items():
             if name in ('history', 'intercepts'):
                 for block in value:
@@ -327,14 +339,15 @@ class CvxpyWeightedLasso:
     Exponential ages include zero-weight rows. W is a diagonal/vector weight.
     """
     def __init__(self, n_features, decay=1.0, alpha=.01, *, fit_intercept=False,
-                 tol=1e-11, max_iter=2000):
+                 tol=1e-11, max_iter=2000, nonneg=False):
         if (not isinstance(n_features, (int, np.integer)) or n_features < 1
                 or not isinstance(max_iter, (int, np.integer)) or max_iter < 1
                 or not np.isfinite([decay, alpha, tol]).all()
                 or not 0 < decay <= 1 or alpha < 0 or tol <= 0):
             raise ValueError('Invalid feature count, decay, penalty, tolerance or iteration limit.')
         self.n_features, self.decay, self.alpha = n_features, decay, alpha
-        self.fit_intercept, self.tol, self.max_iter = fit_intercept, tol, max_iter
+        self.fit_intercept, self.tol, self.max_iter = bool(fit_intercept), tol, max_iter
+        self.nonneg = bool(nonneg)
         self.coef, self.intercept_ = np.zeros(n_features), 0.0
 
     def fit(self, X, y, W=None):
@@ -357,8 +370,18 @@ class CvxpyWeightedLasso:
         self.scale_ = np.where(scale > 0, scale, 1.)
         Z = (X - mx if self.fit_intercept else X) / self.scale_
         target = y - my if self.fit_intercept else y
+        # Certify the exact zero solution using independent row products. Tiny
+        # convex-solver residuals must not become signals after variance sizing.
+        zero_correlation = Z.T @ (a*target)
+        bound = np.max(zero_correlation if self.nonneg else np.abs(zero_correlation))
+        if bound <= self.alpha:
+            self.coef = np.zeros(self.n_features)
+            self.intercept_ = float(my) if self.fit_intercept else 0.
+            self.objective_ = .5*float(a @ target**2)
+            self.status_, self.kkt_violation_ = cp.OPTIMAL, 0.
+            return self
         unit = np.sqrt(a @ target**2) or 1.0
-        theta = cp.Variable(self.n_features)
+        theta = cp.Variable(self.n_features, nonneg=self.nonneg)
         offset = cp.Variable() if self.fit_intercept else 0.0
         residual = target / unit - Z @ theta - offset
         loss = cp.sum_squares(cp.multiply(np.sqrt(a), residual)) / 2
@@ -369,6 +392,8 @@ class CvxpyWeightedLasso:
         if self.status_ != cp.OPTIMAL:
             raise RuntimeError(f'CVXPY reference did not solve accurately: {self.status_}')
         self.coef = np.asarray(theta.value).ravel() * unit / self.scale_
+        if self.nonneg:
+            self.coef = np.maximum(self.coef, 0.)
         self.intercept_ = (float(offset.value) * unit + my - mx @ self.coef
                            if self.fit_intercept else 0.0)
         self.objective_ = .5 * (a @ (y - X @ self.coef - self.intercept_)**2)
@@ -420,8 +445,16 @@ class BatchLasso(CvxpyWeightedLasso):
             self.status_ = 'no_observations'
             return self
         G, h, self.scale_, v = _scaled_moments(moments, self.fit_intercept)
+        # KKT at beta=0: |h| <= alpha (unconstrained), h <= alpha (nonnegative).
+        # This is exact optimization, not an arbitrary coefficient threshold.
+        bound = np.max(h if self.nonneg else np.abs(h))
+        if bound <= self.alpha:
+            self.coef = np.zeros(self.n_features)
+            self.intercept_ = float(moments[1]) if self.fit_intercept else 0.
+            self.objective_, self.status_, self.kkt_violation_ = .5*v, cp.OPTIMAL, 0.
+            return self
         unit = np.sqrt(max(v, 0)) or 1.
-        theta = cp.Variable(self.n_features)
+        theta = cp.Variable(self.n_features, nonneg=self.nonneg)
         loss = .5*cp.quad_form(theta, cp.psd_wrap(G)) - (h/unit) @ theta
         problem = cp.Problem(cp.Minimize(loss + self.alpha/unit*cp.norm1(theta)))
         problem.solve(solver='CLARABEL', tol_gap_abs=self.tol, tol_gap_rel=self.tol,
@@ -430,25 +463,32 @@ class BatchLasso(CvxpyWeightedLasso):
         if problem.status != cp.OPTIMAL:
             raise RuntimeError(f'Batch lasso did not solve accurately: {problem.status}')
         scaled = np.asarray(theta.value).ravel()*unit
+        if self.nonneg:
+            scaled = np.maximum(scaled, 0.)
         self.coef = scaled/self.scale_
         self.intercept_ = float(moments[1]-moments[0]@self.coef) if self.fit_intercept else 0.
         self.objective_ = .5*(v-2*h@scaled+scaled@G@scaled) + self.alpha*np.abs(scaled).sum()
         gradient = G@scaled-h
         active = np.abs(scaled) > 1e-8*unit
-        violation = np.where(active, np.abs(gradient+self.alpha*np.sign(scaled)),
-                              np.maximum(np.abs(gradient)-self.alpha, 0))
+        if self.nonneg:
+            violation = np.where(active, np.abs(gradient+self.alpha),
+                                 np.maximum(-gradient-self.alpha, 0))
+        else:
+            violation = np.where(active, np.abs(gradient+self.alpha*np.sign(scaled)),
+                                  np.maximum(np.abs(gradient)-self.alpha, 0))
         self.kkt_violation_ = float(violation.max())
         return self
 
 
 class BatchRidge:
     """Weighted loss/2 + alpha*||feature_std*beta||^2/2; fit overwrites."""
-    def __init__(self, n_features, alpha=.01, *, decay=1., fit_intercept=True):
+    def __init__(self, n_features, alpha=.01, *, decay=1., fit_intercept=False, nonneg=False):
         if (not isinstance(n_features, (int, np.integer)) or n_features < 1
                 or not np.isfinite([alpha, decay]).all() or alpha <= 0 or not 0 < decay <= 1):
             raise ValueError('Require p>=1, alpha>0 and 0<decay<=1.')
         self.n_features, self.alpha, self.decay = n_features, float(alpha), float(decay)
-        self.fit_intercept = fit_intercept
+        self.fit_intercept = bool(fit_intercept)
+        self.nonneg = bool(nonneg)
         self.coef, self.intercept_ = np.zeros(n_features), 0.
 
     def fit(self, X, y, W=None):
@@ -459,7 +499,21 @@ class BatchRidge:
         if moments is None:
             raise ValueError('Ridge requires at least one positive-weight row.')
         G, h, self.scale_, v = _scaled_moments(moments, self.fit_intercept)
-        theta = np.linalg.solve(G+self.alpha*np.eye(self.n_features), h)
+        Q = G+self.alpha*np.eye(self.n_features)
+        if self.nonneg:
+            # Q = L L', so ||L' theta - L^{-1}h||^2 has the same QP.
+            # Rescale the response to avoid return-unit-dependent solver stopping.
+            from scipy.linalg import solve_triangular
+            from scipy.optimize import nnls
+            unit = np.sqrt(max(v, 0.)) or 1.
+            L = np.linalg.cholesky(Q)
+            rhs = solve_triangular(L, h/unit, lower=True, check_finite=False)
+            theta = nnls(L.T, rhs, maxiter=max(1000, 100*self.n_features))[0]*unit
+        else:
+            theta = np.linalg.solve(Q, h)
+        gradient = Q@theta-h
+        self.kkt_violation_ = float(np.max(np.where(theta > 0, abs(gradient),
+            np.maximum(-gradient, 0))) if self.nonneg else np.max(abs(gradient)))
         self.coef = theta/self.scale_
         self.intercept_ = float(moments[1]-moments[0]@self.coef) if self.fit_intercept else 0.
         self.objective_ = .5*(v-2*h@theta+theta@G@theta+self.alpha*(theta@theta))
@@ -674,7 +728,7 @@ def stream_at_folds(model, X, y, folds, W=None, *, audit_folds=()):
             a, b, c, d = (fold[k] for k in ('train_start','train_stop','predict_start','predict_stop'))
             checkpoint = StreamingWeightedLasso(model.n_features, model.decay, model.alpha,
                 max_iter=model.max_iter, tol=model.tol, fit_intercept=model.fit_intercept,
-                store_history=False)
+                store_history=False, nonneg=model.nonneg)
             checkpoint.fit(X[a:b], y[a:b], W=w[a:b])
             frozen[c:d] = checkpoint.predict(X[c:d])
             coefs.append(checkpoint.coef.copy()); offsets.append(checkpoint.intercept_)
@@ -715,7 +769,7 @@ def forecast_alpha(x, *, hl=288*21, alpha=.01, min_train=288*21,
                    tol=1e-8, max_iter=5000):
     """At row t forecast x[t+1] from x[t], x[t-1], after learning x[t].
 
-    Fit x[s] ~ x[s-1] + x[s-2], with an intercept and unit complete-row weights.
+    Fit x[s] ~ x[s-1] + x[s-2], without intercept and with unit complete-row weights.
     A fixed scale from the initial min_train complete examples makes alpha
     comparable across signal units. No forecast is published before that
     warm-up. Missing lags are never filled; zero-weight rows advance decay.
@@ -742,7 +796,7 @@ def forecast_alpha(x, *, hl=288*21, alpha=.01, min_train=288*21,
     warm = warm[warm != 0]  # Same zero-as-missing scale convention as ts_std.
     scale = (float(warm.std()) or float(np.sqrt(np.mean(warm**2))) or 1.) if len(warm) else 1.
     model = StreamingWeightedLasso(2, 2**(-1/hl), alpha, max_iter=max_iter, tol=tol,
-                                   fit_intercept=True, store_history=True)
+                                   fit_intercept=False, store_history=True)
     started = perf_counter()
     model.fit(lags/scale, values/scale, W=valid.astype(float))
     # Post-update coefficients now know x_t, but never x_{t+1}.

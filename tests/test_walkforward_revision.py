@@ -62,7 +62,7 @@ def test_batch_lasso_matches_independent_row_loss(intercept, alpha):
 def test_decayed_batch_ridge_matches_explicit_cvxpy_loss():
     import cvxpy as cp
     X, y, w = sample()
-    model = fitters.BatchRidge(3, alpha=.03, decay=.97).fit(X, y, W=w)
+    model = fitters.BatchRidge(3, alpha=.03, decay=.97, fit_intercept=True).fit(X, y, W=w)
     a = w * .97 ** np.arange(len(y)-1, -1, -1); a /= a.sum()
     mean = a @ X
     scale = np.sqrt(a @ (X-mean)**2)

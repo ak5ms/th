@@ -182,7 +182,7 @@ def stream_selected_folds(selected: SelectedWalkForward, X, y, W=None, *,
         a, b, c, d = (f[k] for k in ('train_start','train_stop','predict_start','predict_stop'))
         reference = selected.candidates_[key].fitter
         model = StreamingWeightedLasso(p, reference.decay, reference.alpha,
-            fit_intercept=reference.fit_intercept, tol=tol, max_iter=max_iter)
+            fit_intercept=reference.fit_intercept, nonneg=reference.nonneg, tol=tol, max_iter=max_iter)
         model.fit(X[a:b], y[a:b], W=w[a:b])
         terminal_converged = bool(model.converged_)
         terminal_error = model.kkt_violation_
@@ -194,7 +194,9 @@ def stream_selected_folds(selected: SelectedWalkForward, X, y, W=None, *,
             model.fit(X[b:c], np.full(c-b, np.nan), W=np.zeros(c-b))
         live[c:d] = model.fit_predict(X[c:d], y[c:d], W=w[c:d])
         errors = frozen[c:d]-selected.prediction_[c:d]
-        audits.append(dict(fold=i, alpha=reference.alpha, train_start=a, train_stop=b,
+        audits.append(dict(fold=i, alpha=reference.alpha, nonneg=model.nonneg,
+            fit_intercept=model.fit_intercept, frozen_intercept=offsets[-1], live_intercept=float(model.intercept_),
+            train_start=a, train_stop=b,
             terminal_converged=terminal_converged, terminal_kkt=terminal_error,
             training_nonconverged_updates=training_failures,
             live_nonconverged_updates=model.n_failed_-training_failures,
